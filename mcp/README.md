@@ -30,7 +30,7 @@ resource/URL-elicitation поток.
 Пользователю нужен только публичный endpoint:
 
 ```text
-https://193-124-130-236.sslip.io/mcp
+https://83-217-214-234.sslip.io/mcp
 ```
 
 В Claude, ChatGPT, Codex или другом клиенте выберите добавление удалённого MCP и
@@ -56,7 +56,7 @@ https://193-124-130-236.sslip.io/mcp
 ### Codex CLI
 
 ```powershell
-codex mcp add klimat-pro --url https://193-124-130-236.sslip.io/mcp
+codex mcp add klimat-pro --url https://83-217-214-234.sslip.io/mcp
 codex mcp login klimat-pro
 ```
 

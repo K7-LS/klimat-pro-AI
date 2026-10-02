@@ -1,0 +1,18 @@
+{
+  "date": "2026-10-02",
+  "origin": "https://83-217-214-234.sslip.io",
+  "command": "KP_E2E_BASE_URL=https://83-217-214-234.sslip.io node mcp/scripts/recovery-live-e2e.mjs",
+  "exitCode": 0,
+  "stdout": [
+    {"ok": true, "dcr": true, "pkce": true, "consent": true, "refresh": true, "readDeniedWrite": true, "writePrepareConfirm": true, "revokeImmediate": true, "tools": 5},
+    {"cleanup": true, "users": 6, "projects": 22}
+  ],
+  "independentDatabaseReadback": {
+    "users": 6,
+    "projects": 22,
+    "testUsers": 0,
+    "testClientRecords": 0,
+    "activeTestOAuthClients": 0,
+    "softDeletedTestOAuthClients": 1
+  }
+}

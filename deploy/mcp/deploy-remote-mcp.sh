@@ -9,8 +9,8 @@ STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 BACKUP="$WEB/backups/remote-mcp-$STAMP"
 AUTH_COMPOSE="$SUPA/docker-compose.yml"
 AUTH_ENV="$SUPA/.env"
-VPS=root@193.124.130.236
-PUBLIC_ORIGIN=https://193-124-130-236.sslip.io
+VPS=root@83.217.214.234
+PUBLIC_ORIGIN=https://83-217-214-234.sslip.io
 
 test -f "$ROOT/mcp/Dockerfile"
 test -f "$ROOT/deploy/nginx.default.conf"

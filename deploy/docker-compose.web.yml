@@ -25,9 +25,9 @@ services:
       KP_SUPABASE_ANON_KEY: ${ANON_KEY}
       KP_HTTP_HOST: 0.0.0.0
       KP_HTTP_PORT: 8788
-      KP_PUBLIC_MCP_URL: https://193-124-130-236.sslip.io/mcp
-      KP_OAUTH_ISSUER: https://193-124-130-236.sslip.io/auth/v1
-      KP_ALLOWED_HOSTS: 193-124-130-236.sslip.io,mcp,mcp:8788,localhost
+      KP_PUBLIC_MCP_URL: https://83-217-214-234.sslip.io/mcp
+      KP_OAUTH_ISSUER: https://83-217-214-234.sslip.io/auth/v1
+      KP_ALLOWED_HOSTS: 83-217-214-234.sslip.io,mcp,mcp:8788,localhost
       KP_HTTP_BODY_LIMIT: 1000000
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8788/healthz"]

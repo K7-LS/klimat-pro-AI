@@ -3,7 +3,7 @@ set -euo pipefail
 
 SUPA=/srv/supabase-src/docker
 WEB=/srv/daniil-deploy
-VPS=root@193.124.130.236
+VPS=root@83.217.214.234
 BACKUP=${1:-}
 
 case "$BACKUP" in
@@ -17,6 +17,14 @@ test -f "$BACKUP/supabase.env"
 test -f "$BACKUP/docker-compose.web.yml"
 test -f "$BACKUP/auth-schema.sql"
 test -f "$BACKUP/vps-caddy-backup-path.txt"
+
+# A deleted gateway's historical backup must never be applied to this new VPS.
+ORIGIN=https://83-217-214-234.sslip.io
+grep -Fxq "SITE_URL=$ORIGIN" "$BACKUP/supabase.env" || { echo 'Backup origin differs; reconcile manually, rollback refused' >&2; exit 2; }
+grep -Fq '83-217-214-234.sslip.io' "$BACKUP/docker-compose.web.yml" || { echo 'Web backup origin differs; rollback refused' >&2; exit 2; }
+CADDY_BACKUP=$(cat "$BACKUP/vps-caddy-backup-path.txt")
+case "$CADDY_BACKUP" in /etc/caddy/Caddyfile.backup-*) ;; *) echo 'Bad Caddy backup path' >&2; exit 2 ;; esac
+ssh -o BatchMode=yes "$VPS" "test -f '$CADDY_BACKUP' && grep -Fq '83-217-214-234.sslip.io' '$CADDY_BACKUP'" || { echo 'Matching VPS Caddy backup unavailable; rollback refused' >&2; exit 2; }
 
 echo "ROLLBACK from $BACKUP" >&2
 
@@ -36,8 +44,6 @@ else
   rm -f "$WEB/nginx.default.conf"
 fi
 
-CADDY_BACKUP=$(cat "$BACKUP/vps-caddy-backup-path.txt")
-case "$CADDY_BACKUP" in /etc/caddy/Caddyfile.backup-*) ;; *) echo 'Bad Caddy backup path' >&2; exit 2 ;; esac
 ssh "$VPS" "cp '$CADDY_BACKUP' /etc/caddy/Caddyfile && caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy"
 
 (cd "$SUPA" && docker compose up -d auth)

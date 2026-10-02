@@ -3,11 +3,37 @@
 > Единственный источник правды о состоянии проекта. Обновляется в конце каждой рабочей сессии.
 > Правило: не верь датам в других доках — этот файл главнее; расхождение = обнови этот файл.
 
-**Обновлено: 2026-08-11** (`main`/`origin/main` включают `d5dff35`; удалённый OAuth MCP развёрнут и прошёл live E2E.)
+**Обновлено: 2026-10-02** (восстановлен прод после удаления VPS; новый origin ниже, OAuth MCP прошёл повторный live E2E).
+
+## Готово — восстановление VPS 02.10.2026
+
+- Создан VDSina №3261797 «КЛИМАТ-ПРО»: стандартный тариф **5 ₽/день**, Москва,
+  1 core / 1 GB / 10 GB / 1 TB, Ubuntu 26.04; при создании новые автобэкапы не заказывались.
+- В VDSina осталась активная копия №3245492 прежнего сервера от 18.09.2026,
+  10 GB; показанная цена копии 4 ₽/день — отдельный расход сверх 5 ₽/день нового VPS.
+  Копия не удалялась; дальнейшее хранение/удаление решает владелец.
+- Новый сайт: **https://83-217-214-234.sslip.io**, MCP: **https://83-217-214-234.sslip.io/mcp**.
+  Старый VPS `193.124.130.236` удалён и больше не принадлежит проекту; старые ссылки не использовать.
+- Восстановлены Caddy/HTTPS и frp; API/MCP направлены в прежний Docker на ПК.
+  Данные не переносились и схема БД не менялась: после проверки **22 проекта / 6 аккаунтов**.
+- SSH только по прежнему ключу, firewall 22/80/443/7000, внутренние proxy-порты
+  только loopback, TLS/token на frp. Windows `/32` маршрут через Ethernet проверен в ActiveStore и PersistentStore.
+- Auth v2.195.0 и MCP healthy; public URL/issuer и frontend настроены на новый origin.
+  `dist` = nginx = HTTPS: `index-BJJ_MVWa.js` / `index-DegNOVBM.css`, JS/CSS/sw.js HTTP 200.
+- OAuth E2E PASS: DCR, PKCE, consent, refresh, 5 tools, read-запрет записи,
+  write prepare/confirm create+delete и немедленный revoke. Временные аккаунт и запись
+  удалены; активных тестовых OAuth-клиентов 0, GoTrue сохранил 1 soft-deleted tombstone.
+- Frontend **165/165**, MCP **59/59**, production build PASS; браузер показывает
+  экран входа без console errors. Полная visual QA под реальным аккаунтом не проводилась.
+- Перед изменениями сохранена root-only копия конфигурации и предыдущего frontend:
+  `/srv/daniil-deploy/backups/vps-recovery-20261002T115406Z` (не полный backup БД).
+- Из-за нового origin требуется войти заново и переподключить LLM по новому MCP URL.
+  ПК/WSL по-прежнему должны работать; VPS за 5 ₽/день — только внешний шлюз.
+  Подробности: `session-reports/2026-10-02_vdsina-recovery/report.md`.
 
 ## Готово — публичный MCP для пользователей без репозитория
 
-- Реализован публичный Streamable HTTP resource `https://193-124-130-236.sslip.io/mcp` с OAuth 2.1/PKCE, Dynamic Client Registration и refresh tokens через self-hosted Supabase Auth.
+- Реализован публичный Streamable HTTP resource `https://83-217-214-234.sslip.io/mcp` с OAuth 2.1/PKCE, Dynamic Client Registration и refresh tokens через self-hosted Supabase Auth.
 - В Admin у каждого одобренного аккаунта появился отдельный уровень `Нет / Чтение / Изменение`; отсутствие строки означает deny. MCP перепроверяет грант на каждом запросе, поэтому отзыв действует сразу и не полагается только на срок JWT.
 - Добавлена отдельная consent-страница `/oauth/consent`: вход обычным логином сайта, показ имени клиента/scopes/уровня, явное разрешение или отказ. Пароль не передаётся LLM-клиенту.
 - Миграция `20260811_0001_remote_mcp_access.sql` применена; GoTrue обновлён 2.186.0 → 2.195.0, `API_EXTERNAL_URL`/`SITE_URL` переведены на публичный HTTPS. MCP работает в Node 22 контейнере без host-порта через nginx/Caddy и существующий frp `:8080`.
@@ -42,11 +68,13 @@
 - Закрыты: «Помощь» в профиле и ложная подпись `Supabase (Frankfurt)`. Реальная авторизованная visual QA ожидает пользовательскую сессию.
 
 ## Прод
+- **02.10.2026 — текущий прод:** новый VPS `83.217.214.234`, HTTPS HTTP 200,
+  assets `index-BJJ_MVWa.js` / `index-DegNOVBM.css`, Auth/MCP healthy, повторный OAuth E2E PASS.
+  Записи ниже — история предыдущих релизов, не текущий origin или asset.
 - **11.08.2026 — Remote MCP OAuth:** `main`/`origin/main` включают `d5dff35`; миграция `20260811_0001` применена, GoTrue `v2.195.0` healthy, `daniil-mcp` healthy, внешний OAuth/MCP E2E PASS. Frontend asset `index-CAVK59Q5.js` совпадает между `dist`, nginx `:8080` и внешним HTTPS.
 - **11.08.2026:** MCP 6.7 и русская инструкция подключения LLM включены в `main`/`origin/main` (`e4a2fa2`, `3ca355d`). Фронтенд задеплоен; `dist`, nginx `:8080` и внешний HTTPS отдают `assets/index-CgzldX97.js` и `assets/index-DegNOVBM.css`, главная и оба asset-запроса = HTTP 200. Живая БД не менялась — новая миграция не требуется.
 - **29.07.2026:** `main`/`origin/main` включают `c38d8a2` (`fix: apply appearance to existing cards`). Миграция `20260729_0001` повторно применена к `supabase-db`: 6/6 колонок, RLS=true, policy `user_appearance_preferences_owner_all` использует и проверяет `user_id = auth.uid()`. Фронтенд задеплоен; `dist`, nginx и внешний HTTPS отдают `assets/index-DjaZC-_-.js` и `assets/index-DegNOVBM.css`, оба asset-запроса HTTPS=200.
-- Живой: https://193-124-130-236.sslip.io — **HTTP 200 снаружи** и на nginx :8080 (frp-туннель восстановлен после
-  возврата VPN Direct-правила `193.124.130.236/32` — инцидент 502 при деплое банка закрыт).
+- Живой: https://83-217-214-234.sslip.io — **HTTP 200 снаружи** и на nginx :8080.
 - Исторический релиз банка v2: **26e0b86** / `index-CRXk9JKF.js` (04.07,
   было сверено dist=nginx:8080=снаружи HTTP 200). Предыдущий ему прод — `CG_qyP3W` (follow-up Фазы 3).
   ⚠️ Банк НЕ прогнан на реальной выписке (эвристики проверены синтетикой) — проверить первый реальный импорт выписки.
@@ -55,7 +83,8 @@
 - БД: миграция `20260703_0003` применена (client_messages + client_visible + RPC), verify `MESSAGES_OK`+`FILES_OK`.
 - БД: миграция `20260704_0001_merchant_rules` **применена к живой БД** 04.07 (таблица + RLS=true owner-only +
   RPC `get_merchant_rules`/`upsert_merchant_rule` + policy `merchant_rules_owner_all` — верифицировано).
-- ⚠ Условие живости: VPN Happ должен держать Direct-правило `193.124.130.236/32` (см. CLAUDE.md, грабли).
+- ⚠ Условие живости: ПК/WSL должны работать, новый VPS должен обходить VPN.
+  Постоянный Windows-маршрут `83.217.214.234/32` установлен; старое Direct-правило не заменяет его.
 
 ## Готово (крупное, хронология свежего)
 - ✅ **Портал заказчика Фазы 2-3 — ПЕРЕПИСКА + ФАЙЛЫ + УВЕДОМЛЕНИЯ (внедрено 03.07 глубокой ночью)**:

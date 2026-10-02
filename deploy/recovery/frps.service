@@ -1,0 +1,18 @@
+[Unit]
+Description=Klimat Pro reverse tunnel server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=frp
+Group=frp
+ExecStart=/usr/local/bin/frps -c /etc/frp/frps.toml
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

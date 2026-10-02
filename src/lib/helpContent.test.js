@@ -27,7 +27,7 @@ describe('helpContent', () => {
     const mcp = adminSections.find(s => s.key === 'mcp-api');
 
     expect(mcp).toBeTruthy();
-    expect(mcp.how).toContain('https://193-124-130-236.sslip.io/mcp');
+    expect(mcp.how).toContain('https://83-217-214-234.sslip.io/mcp');
     expect(mcp.how).not.toContain('mcp/src/stdio.js');
     expect(clientKeys).not.toContain('mcp-api');
   });
