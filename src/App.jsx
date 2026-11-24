@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { supabase } from "./lib/supabase";
+import PaymentReport from "./components/PaymentReport";
+import { loadPersonalReport } from "./lib/personalReport";
 import { diffLines } from "./lib/lineDiff";
 import { isPushSupported, getPushState, enablePush, disablePush } from "./lib/push";
 import { periodRange, prevPeriodRange, granularityFor, periodBalance, trendDir, financeSeries, expenseByCategory, receivables, myTasks, ownerReceived, mySharesTotals, myProjectIncomeForMonth, selectionTotals, projectIncomeTxs, viewerShareOnProject, portfolioMineTotal } from "./lib/dashboardMetrics";
@@ -355,10 +357,11 @@ async function fetchProjectShares(client) {
 }
 
 async function fetchProjectPayments(client, projectId) {
-  const { data, error } = await client.from("project_payments")
-    .select("id, amount, paid_on, note").eq("project_id", projectId).order("paid_on", { ascending: false });
+  const { data, error, count } = await client.from("project_payments")
+    .select("id, amount, paid_on, note", { count: "exact" }).eq("project_id", projectId).order("paid_on", { ascending: false });
   if (error) throw error;
-  return (data || []).map(paymentDbToJs);
+  if (data?.length !== count) throw new Error("Не удалось загрузить все платежи проекта.");
+  return data.map(paymentDbToJs);
 }
 async function setProjectPayments(client, projectId, rows) {
   const payload = (rows || []).map(r => ({ amount: Number(r.amount) || 0, paid_on: r.paidOn, note: r.note || null }));
@@ -1059,7 +1062,7 @@ async function fetchProjectFiles(client, projectId) {
   return data || [];
 }
 
-async function uploadProjectFile(client, projectId, file, isPublic) {
+async function uploadProjectFile(client, projectId, file) {
   // Бинарная загрузка: шлём сырой File (стримится), метаданные — в заголовках.
   // НЕ читаем файл в base64 — иначе worker Edge Function упирается в memory limit.
   const { data, error } = await client.functions.invoke("nextcloud", {
@@ -1078,18 +1081,21 @@ async function uploadProjectFile(client, projectId, file, isPublic) {
 
 // Nextcloud внутренний — прямой ссылки нет: функция стримит файл, получаем Blob.
 async function downloadProjectFile(client, fileId) {
-  const { data, error } = await client.functions.invoke("nextcloud", {
-    body: { action: "download", id: fileId },
+  // functions.invoke decodes Office files and images as text. Read the attachment as bytes.
+  const { data, error } = await client.auth.getSession();
+  if (error || !data.session) throw new Error("Войдите в систему, чтобы скачать файл.");
+  const response = await fetch(new URL("/functions/v1/nextcloud", import.meta.env.VITE_SUPABASE_URL), {
+    method: "POST",
+    redirect: "error",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: import.meta.env.VITE_SUPABASE_KEY,
+      Authorization: "Bearer " + data.session.access_token,
+    },
+    body: JSON.stringify({ action: "download", id: fileId }),
   });
-  if (error) throw error;
-  if (data instanceof Blob) return data;
-  if (typeof data === "string") return new Blob([data]);
-  if (data instanceof ArrayBuffer) return new Blob([data]);
-  throw new Error("Не удалось получить файл");
-}
-
-async function toggleFilePublic(client, fileId, makePublic) {
-  return ncAction(client, "toggle-public", { id: fileId, makePublic });
+  if (!response.ok) throw new Error("Не удалось скачать файл (HTTP " + response.status + ").");
+  return response.blob();
 }
 
 async function deleteProjectFile(client, fileId) {
@@ -2173,7 +2179,9 @@ function AuthScreen({ onAuthenticated, onError }) {
 // ════════════════════════════════════════════════════════════════════════════
 function ProjectForm({ initial, onSave, onClose, saving, client, profile, showToast, isOwner }) {
   const isMobile = useIsMobile(); // моб-баг #1: парные поля 1fr 1fr сворачиваем в колонку на телефоне
-  const [activeTab, setActiveTab] = useState("main"); // #7: вкладки формы (main|fin|team|details)
+  const [activeTab, setActiveTab] = useState("main");
+  const [moreFields, setMoreFields] = useState(false);
+  const [discussion, setDiscussion] = useState("customer");
   const [f, setF] = useState(initial ? {
     ...initial,
     shares: (initial.shares || []).map(s => ({
@@ -2287,14 +2295,28 @@ function ProjectForm({ initial, onSave, onClose, saving, client, profile, showTo
   // v3.0: загрузка платежей при открытии существующего проекта.
   // paymentsReady блокирует «Сохранить», пока платежи не загрузились — иначе replace-all
   // пустым массивом сотрёт реальные платежи (race при быстром нажатии «Сохранить»).
-  const [paymentsReady, setPaymentsReady] = useState(!initial?.id);
+  const originalFinance = useRef(null);
+  const [paymentLoad, setPaymentLoad] = useState(initial?.id ? "loading" : "ready");
+  const [paymentAttempt, setPaymentAttempt] = useState(0);
+  const paymentsReady = paymentLoad === "ready";
   useEffect(() => {
     if (!client || !initial?.id) return;
-    fetchProjectPayments(client, initial.id)
-      .then(payments => setF(p => ({ ...p, payments })))
-      .catch(() => {}) // не критично — продолжим с пустым массивом
-      .finally(() => setPaymentsReady(true));
-  }, [initial?.id]); // eslint-disable-line
+    let current = true;
+    setPaymentLoad("loading");
+    Promise.all([
+      fetchProjectPayments(client, initial.id),
+      client.from("project_shares").select("*", { count: "exact" }).eq("project_id", initial.id),
+    ]).then(([payments, result]) => {
+      if (result.error || result.count !== result.data?.length) throw new Error("Не удалось загрузить все доли");
+      const shares = result.data.map(shareDbToJs).map(sh => ({ ...sh, label: sh.participantLabel || sh.participantName || "участник" }));
+      if (current) {
+        originalFinance.current = { payments, shares };
+        setF(p => ({ ...p, payments, shares }));
+        setPaymentLoad("ready");
+      }
+    }).catch(() => { if (current) setPaymentLoad("error"); });
+    return () => { current = false; };
+  }, [client, initial?.id, paymentAttempt]);
 
   const addShare = (part) => setF(p => ({ ...p, shares: [...(p.shares || []), {
     participantUserId: part.userId || null,
@@ -2327,18 +2349,18 @@ function ProjectForm({ initial, onSave, onClose, saving, client, profile, showTo
 
   return (
     <div>
-      {/* #7: вкладки формы — группируем ~16 блоков, чтобы не вываливать всё сразу */}
-      <div style={{display:"flex",gap:4,marginBottom:16,borderBottom:"1px solid #2a2a2e",overflowX:"auto",whiteSpace:"nowrap"}}>
-        {[{k:"main",l:"📋 Главное"},{k:"fin",l:"💰 Финансы"},{k:"team",l:"👥 Команда"},{k:"details",l:"💬 Детали"},...(initial?.id?[{k:"history",l:"🕘 История"}]:[])].map(t=>(
+      {(initial?.id || moreFields) && <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:16,borderBottom:"1px solid #2a2a2e"}}>
+        {[{k:"main",l:"Объект"}, ...(initial?.id ? [{k:"tasks",l:"Задачи"},{k:"files",l:"Файлы"},{k:"messages",l:"Переписка"}] : [{k:"files",l:"Ссылки"}]),
+          {k:"fin",l:"Финансы"},{k:"team",l:"Команда"}, ...(initial?.id ? [{k:"history",l:"История"}] : [])].map(t=>(
           <button key={t.k} type="button" onClick={()=>setActiveTab(t.k)} style={{
             padding:"9px 14px",fontSize:13.5,fontWeight:activeTab===t.k?700:500,cursor:"pointer",
             background:"transparent",border:"none",borderBottom:`2px solid ${activeTab===t.k?"#d4af37":"transparent"}`,
             color:activeTab===t.k?"#d4af37":"var(--text-tertiary)",whiteSpace:"nowrap",
           }}>{t.l}</button>
         ))}
-      </div>
+      </div>}
       {activeTab==="main" && (<>
-      <Field label="Название проекта">
+      <Field label="Название объекта *">
         <StyledInput value={f.name} onChange={e => s("name", e.target.value)}
           placeholder="Н-р: ОВиК Жилой дом пер. Строителей" />
       </Field>
@@ -2491,8 +2513,13 @@ function ProjectForm({ initial, onSave, onClose, saving, client, profile, showTo
         <div><Label>Дедлайн</Label>
           <StyledInput type="date" value={f.deadline} onChange={e => s("deadline", e.target.value)} /></div>
       </div>
+      <Field label="Примечания">
+        <StyledTextarea rows={2} value={f.notes} onChange={e => s("notes", e.target.value)} />
+      </Field>
+      {!initial?.id && !moreFields && <button type="button" className={BTN.ghost} onClick={() => setMoreFields(true)}>Дополнительные поля</button>}
       </>)}
-      {activeTab==="fin" && (<>
+      {activeTab==="fin" && paymentLoad === "loading" && <p>Загружаем данные по оплатам и долям…</p>}
+      {activeTab==="fin" && paymentsReady && (<>
       <div style={{ marginBottom: 12 }}>
         <Label>Сумма договора (₽)</Label>
         <StyledInput type="number" value={f.contractSum} onChange={e => s("contractSum", e.target.value)} placeholder="0" />
@@ -2736,7 +2763,9 @@ function ProjectForm({ initial, onSave, onClose, saving, client, profile, showTo
         </div>
       </div>
       </>)}
-      {activeTab==="details" && (<>
+      {initial?.id && client && activeTab === "files" &&
+        <ProjectFiles projectId={initial.id} profile={profile} client={client} showToast={showToast} isOwner={isOwner} />}
+      {activeTab==="files" && (<>
 
       {/* ═══ НОВАЯ СЕКЦИЯ: Ссылки на материалы ═══ */}
       <div style={{
@@ -2940,89 +2969,30 @@ function ProjectForm({ initial, onSave, onClose, saving, client, profile, showTo
         </div>
       )}
       </>)}
-      {activeTab==="details" && (<>
-
-      {/* ═══ СЕКЦИЯ: Комментарии (v2.0) ═══ */}
-      {initial && initial.id && client && (
-        <div style={{
-          marginBottom: 14, padding: "12px 14px",
-          background: "rgba(255,255,255,0.02)",
-          border: "1px solid rgba(255,255,255,0.07)",
-          borderRadius: 10,
-        }}>
-          <div style={{
-            display: "flex", alignItems: "center", gap: 6,
-            fontSize: 11, fontWeight: 600, color: "var(--text-secondary)",
-            textTransform: "uppercase", letterSpacing: "0.10em",
-            marginBottom: 12,
-          }}>
-            <MessageSquare size={12} strokeWidth={2.4} />
-            Комментарии
-          </div>
-          <CommentsSection
-            projectId={initial.id}
-            profile={profile}
-            client={client}
-            showToast={showToast}
-            isOwner={isOwner}
-          />
+      {initial?.id && client && activeTab === "messages" && <div className="mb-4">
+        <div className="flex flex-wrap gap-2 mb-3">
+          {[["customer", "С заказчиком"], ["comments", "Комментарии к проекту"]].map(([id, label]) => (
+            <button type="button" key={id} aria-pressed={discussion === id}
+              className={discussion === id ? BTN.primary : BTN.ghost} onClick={() => setDiscussion(id)}>{label}</button>
+          ))}
         </div>
-      )}
-
-      {/* ═══ СЕКЦИЯ: Переписка с заказчиком (виден заказчику) ═══ */}
-      {initial && initial.id && client && (
-        <div style={{ marginBottom: 14, padding: "12px 14px",
-          background: "rgba(212,175,55,0.04)", border: "1px solid rgba(212,175,55,0.18)", borderRadius: 10 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 600,
-            color: "#d4af37", textTransform: "uppercase", letterSpacing: "0.10em", marginBottom: 12 }}>
-            <MessageSquare size={12} strokeWidth={2.4} />
-            Переписка с заказчиком · видно заказчику
-          </div>
-          <ClientChat projectId={initial.id} client={client} showToast={showToast} />
-        </div>
-      )}
-
-      {/* ═══ СЕКЦИЯ: Файлы на Yandex Disk (v2.0) ═══ */}
-      {initial && initial.id && client && (
-        <div style={{
-          marginBottom: 14, padding: "12px 14px",
-          background: "rgba(255,255,255,0.02)",
-          border: "1px solid rgba(255,255,255,0.07)",
-          borderRadius: 10,
-        }}>
-          <div style={{
-            display: "flex", alignItems: "center", gap: 6,
-            fontSize: 11, fontWeight: 600, color: "var(--text-secondary)",
-            textTransform: "uppercase", letterSpacing: "0.10em",
-            marginBottom: 12,
-          }}>
-            <HardDrive size={12} strokeWidth={2.4} />
-            Файлы проекта
-          </div>
-          <ProjectFiles
-            projectId={initial.id}
-            profile={profile}
-            client={client}
-            showToast={showToast}
-            isOwner={isOwner}
-          />
-          {initial.id && <ProjectTasksSection projectId={initial.id} client={client} profile={profile} showToast={showToast} />}
-        </div>
-      )}
-
-      <Field label="Примечания">
-        <StyledTextarea rows={2} value={f.notes} onChange={e => s("notes", e.target.value)} />
-      </Field>
-      </>)}
+        {discussion === "customer"
+          ? <ClientChat projectId={initial.id} client={client} showToast={showToast} />
+          : <CommentsSection projectId={initial.id} profile={profile} client={client} showToast={showToast} isOwner={isOwner} />}
+      </div>}
+      {initial?.id && client && activeTab === "tasks" &&
+        <ProjectTasksSection projectId={initial.id} projectName={initial.name} client={client} profile={profile} showToast={showToast} />}
       {activeTab==="history" && (<>
         {initial && initial.id
           ? (actLoading ? <Empty text="Загружаем историю…" /> : <ActivityFeed items={projActivity} />)
           : <Empty text="История доступна после сохранения проекта" />}
       </>)}
+      {paymentLoad === "error" && <p role="alert">Доли или платежи не загрузились. Чтобы сохранить карточку, <button type="button" className={BTN.ghost} onClick={() => setPaymentAttempt(n => n + 1)}>повторите загрузку</button>.</p>}
       <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
         <button onClick={onClose} className={BTN.ghost} style={{ flex: 1 }} disabled={saving}>Отмена</button>
-        <button onClick={() => { if(!f.name||!f.name.trim()){ setActiveTab("main"); showToast("Проверьте вкладку «Главное»: не заполнено название","error"); return; } onSave(f); }} className={BTN.primary} style={{ flex: 2, opacity: (saving || !paymentsReady) ? 0.6 : 1 }} disabled={saving || !paymentsReady}>
-          {saving ? "Сохраняем..." : !paymentsReady ? "Загрузка платежей…" : "Сохранить"}
+        <button onClick={() => { if(!f.name||!f.name.trim()){ setActiveTab("main"); showToast("Введите название объекта","error"); return; } onSave(f, { sharesChanged: originalFinance.current ? originalFinance.current.shares !== f.shares : !!f.shares?.length,
+          paymentsChanged: originalFinance.current ? originalFinance.current.payments !== f.payments : !!f.payments?.length }); }} className={BTN.primary} style={{ flex: 2, opacity: (saving || !paymentsReady) ? 0.6 : 1 }} disabled={saving || !paymentsReady}>
+          {saving ? "Сохраняем..." : paymentLoad === "error" ? "Сохранение недоступно" : !paymentsReady ? "Загрузка финансов…" : initial?.id ? "Сохранить изменения" : "Создать и открыть"}
         </button>
       </div>
     </div>
@@ -3666,14 +3636,15 @@ function Projects({ projects, setProjects, clients, client, profile, ownerId, sh
     if (p) { setModal(p); onProjectOpened?.(); }
   }, [pendingProjectId, projects]);
 
-  const saveProject = async (form) => {
+  const saveProject = async (form, { sharesChanged, paymentsChanged }) => {
+    let created = null;
     setSaving(true);
     try {
       let saved;
       if (modal === "add") {
         saved = await insertProject(client, form, ownerId);
         setProjects(prev => [saved, ...prev]);
-        showToast("✓ Проект создан");
+        created = saved;
         // №7: участники черновика команды → в project_members сразу после создания (+ уведомление)
         for (const m of (form.teamDraft || [])) {
           if (!m.userId) continue;
@@ -3685,7 +3656,7 @@ function Projects({ projects, setProjects, clients, client, profile, ownerId, sh
       } else {
         saved = await updateProject(client, modal.id, form);
         setProjects(prev => prev.map(p => p.id === saved.id ? saved : p));
-        showToast("✓ Проект обновлён");
+
         // follow-up Фазы 3: смена стадии через форму → уведомить заказчика (best-effort).
         // Гвард по modal.stage (прежняя) vs form.stage (новая) — иначе push при любом сохранении.
         // QEStage (быстрая смена стадии) шлёт этот же тип своим путём; UI-пути не пересекаются.
@@ -3714,7 +3685,7 @@ function Projects({ projects, setProjects, clients, client, profile, ownerId, sh
         }
       }
       // v2.1: сохраняем доли участников атомарно через RPC (delete+insert в одной транзакции)
-      if (saved?.id) {
+      if (sharesChanged) {
         const projectId = saved.id;
         const shareRows = (form.shares || [])
           .filter(sh => (Number(sh.shareValue) || 0) > 0 && (sh.participantUserId || sh.participantClientId || sh.participantName))
@@ -3734,10 +3705,14 @@ function Projects({ projects, setProjects, clients, client, profile, ownerId, sh
           setSharesByProject(freshShares);
         }
 
+      }
+      const markedPaid = form.stage === "Оплачен" && form.stage !== modal?.stage;
+      if (paymentsChanged || markedPaid) {
+        const projectId = saved.id;
         // v3.0: сохраняем платежи
         // При стадии «Оплачен» — если сумма платежей < суммы договора, добавляем платёж на остаток
         let paymentsToSave = [...(form.payments || [])];
-        if (form.stage === "Оплачен") {
+        if (markedPaid) {
           const contractSum = Number(form.contractSum) || 0;
           const paidSum = paymentsToSave.reduce((acc, r) => acc + (Number(r.amount) || 0), 0);
           if (contractSum > 0 && paidSum < contractSum) {
@@ -3751,9 +3726,11 @@ function Projects({ projects, setProjects, clients, client, profile, ownerId, sh
         // Обновляем платежи в App-state, чтобы Finance показал свежий проектный доход без reload
         if (setPaymentsByProject) { try { setPaymentsByProject(await fetchMyPayments(client)); } catch { /* не критично */ } }
       }
-      setModal(null);
+      setModal(created ? saved : null);
+      showToast(created ? "Объект создан" : "Изменения сохранены");
     } catch (e) {
-      showToast("Ошибка: " + (e.message || "не удалось сохранить"), "error");
+      if (created) setModal(created);
+      showToast((created ? "Объект создан, часть данных не сохранена. " : "Ошибка сохранения. ") + (e.message || ""), "error");
     } finally {
       setSaving(false);
     }
@@ -3833,12 +3810,12 @@ function Projects({ projects, setProjects, clients, client, profile, ownerId, sh
             fontSize: 12, fontWeight: 600, cursor: "pointer", transition: "all .15s", whiteSpace: "nowrap",
           }}
         >{selectMode ? "Отмена" : "Выбрать"}</button>
-        <MagneticButton onClick={()=>setModal("add")} className={BTN.primary}>+ Новый проект</MagneticButton>
+        <MagneticButton onClick={()=>setModal("add")} className={BTN.primary}>+ Новый объект</MagneticButton>
       </div>
 
       <div style={{display:"flex",flexDirection:"column",gap:12}}>
         {visibleSorted.length===0
-          ? <Empty text={stageFilter==="Все"?"Нет проектов — нажми «Новый проект»":`Нет проектов со стадией «${stageFilter}»`}/>
+          ? <Empty text={stageFilter==="Все"?"Нет проектов — нажми «Новый объект»":`Нет проектов со стадией «${stageFilter}»`}/>
           : visibleSorted.map((p,i)=>{
             const meta = STAGE_META[p.stage]||{color:"#d4af37",progress:0};
             const isAwaitingPayment = p.stage==="Сдан заказчику";
@@ -4213,8 +4190,8 @@ function Projects({ projects, setProjects, clients, client, profile, ownerId, sh
       })()}
 
       {modal&&(
-        <Modal title={modal==="add"?"Новый проект":"Редактировать проект"} onClose={()=>!saving&&setModal(null)}>
-          <ProjectForm
+        <Modal maxWidth={860} title={modal==="add"?"Новый объект":modal.name} onClose={()=>!saving&&setModal(null)}>
+          <ProjectForm key={modal === "add" ? "new" : modal.id}
             initial={modal === "add" ? null : { ...modal, shares: (sharesByProject || {})[modal.id] || [] }}
             onSave={saveProject}
             onClose={() => setModal(null)}
@@ -4418,7 +4395,7 @@ async function extractYandexPdfRows(file) {
 // TASKS (v6.4a) — вкладка Задачи: список + фильтры, доска (drag-drop), модалка
 // ════════════════════════════════════════════════════════════════════════════
 
-function ProjectTasksSection({ projectId, client, profile, showToast }) {
+function ProjectTasksSection({ projectId, projectName, client, profile, showToast }) {
   const [tasks, setTasks] = useState([]);
   const [title, setTitle] = useState("");
   const [editing, setEditing] = useState(null);
@@ -4429,13 +4406,16 @@ function ProjectTasksSection({ projectId, client, profile, showToast }) {
   };
   useEffect(() => { if (projectId) reload(); /* eslint-disable-next-line */ }, [projectId]);
 
+  const [adding, setAdding] = useState(false);
   const quickAdd = async () => {
-    if (!title.trim()) return;
+    if (!title.trim() || adding) return;
+    setAdding(true);
     try {
       const id = await createTask(client, { projectId, title, status: "Новая", priority: "Обычный" }, profile.id);
       await notifyTask(client, "task_created", id, profile.id);
       setTitle(""); reload();
     } catch (e) { showToast("Ошибка: " + (e.message || ""), "error"); }
+    finally { setAdding(false); }
   };
 
   return (
@@ -4451,8 +4431,9 @@ function ProjectTasksSection({ projectId, client, profile, showToast }) {
         <input className="flex-1 bg-zinc-800 rounded px-2 py-1" placeholder="+ задача (Enter)"
                value={title} onChange={e => setTitle(e.target.value)}
                onKeyDown={e => { if (e.key === "Enter") quickAdd(); }} />
+        <button type="button" className={BTN.ghost} disabled={!title.trim() || adding} onClick={quickAdd}>Добавить задачу</button>
       </div>
-      {editing && <TaskModal task={editing} client={client} profile={profile} projects={[]}
+      {editing && <TaskModal task={editing} client={client} profile={profile} projects={[{ id: projectId, name: projectName }]}
                              onClose={() => setEditing(null)} onSaved={() => { setEditing(null); reload(); }}
                              showToast={showToast} />}
     </div>
@@ -5361,7 +5342,7 @@ function TasksView({ client, profile, projects, showToast, appearance, customize
               }}>{l}</button>
             ))}
           </div>
-          <MagneticButton onClick={() => setEditing({ status: "Новая", priority: "Обычный" })} className={BTN.primary}>+ Новая задача</MagneticButton>
+          <MagneticButton onClick={() => setEditing({ projectId: fProject || "", status: "Новая", priority: "Обычный" })} className={BTN.primary}>+ Новая задача</MagneticButton>
         </div>
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16, alignItems: "center" }}>
@@ -6414,7 +6395,6 @@ function ProjectFiles({ projectId, profile, client, showToast, isOwner }) {
   const [files, setFiles]       = useState([]);
   const [loading, setLoading]   = useState(true);
   const [uploading, setUploading] = useState(false);
-  const [uploadPublic, setUploadPublic] = useState(false);
   const [usedBytes, setUsedBytes] = useState(0);
   const fileInputRef = useRef(null);
 
@@ -6446,7 +6426,7 @@ function ProjectFiles({ projectId, profile, client, showToast, isOwner }) {
     }
     setUploading(true);
     try {
-      await uploadProjectFile(client, projectId, file, uploadPublic);
+      await uploadProjectFile(client, projectId, file);
       showToast("✓ Файл загружен");
       await reload();
     } catch (e) {
@@ -6469,18 +6449,6 @@ function ProjectFiles({ projectId, profile, client, showToast, isOwner }) {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-    } catch (e) {
-      showToast("Ошибка: " + (e.message || ""), "error");
-    }
-  };
-
-  const handleTogglePublic = async (f) => {
-    try {
-      await toggleFilePublic(client, f.id, !f.is_public);
-      setFiles(prev => prev.map(x =>
-        x.id === f.id ? { ...x, is_public: !f.is_public, public_url: null } : x
-      ));
-      showToast(f.is_public ? "Файл сделан приватным" : "Файл опубликован (доступ внутри системы)");
     } catch (e) {
       showToast("Ошибка: " + (e.message || ""), "error");
     }
@@ -6539,11 +6507,8 @@ function ProjectFiles({ projectId, profile, client, showToast, isOwner }) {
                 }}>{f.filename}</div>
                 <div style={{ fontSize: 10, color: "var(--text-tertiary)", marginTop: 1 }}>
                   {fmtSize(f.file_size)} · {fmtDT(f.created_at)} · {f.uploader_name}
-                  {f.is_public && (
-                    <span style={{ marginLeft: 6, color: "#6ee7a8" }}>● публичный</span>
-                  )}
                   {f.client_visible && (
-                    <span style={{ marginLeft: 6, color: "#d4af37" }}>● заказчику</span>
+                    <span style={{ marginLeft: 6, color: "#d4af37" }}>Передан заказчику</span>
                   )}
                 </div>
               </div>
@@ -6562,25 +6527,6 @@ function ProjectFiles({ projectId, profile, client, showToast, isOwner }) {
                 >
                   <Download size={13} strokeWidth={2.2} />
                 </button>
-                {/* Публичность (только загрузивший или владелец) */}
-                {(f.owner_id === profile?.id || isOwner || profile?.role === "admin") && (
-                  <button
-                    onClick={() => handleTogglePublic(f)}
-                    title={f.is_public ? "Сделать приватным" : "Опубликовать"}
-                    style={{
-                      background: "none", border: "none", cursor: "pointer",
-                      color: f.is_public ? "#6ee7a8" : "var(--text-tertiary)", padding: 4, lineHeight: 1,
-                      transition: "color 0.15s",
-                    }}
-                    onMouseOver={e => e.currentTarget.style.color = "#d4af37"}
-                    onMouseOut={e => e.currentTarget.style.color = f.is_public ? "#6ee7a8" : "var(--text-tertiary)"}
-                  >
-                    {f.is_public
-                      ? <Unlock size={13} strokeWidth={2.2} />
-                      : <Lock size={13} strokeWidth={2.2} />
-                    }
-                  </button>
-                )}
                 {/* Показать заказчику (только загрузивший / владелец / админ) */}
                 {(f.owner_id === profile?.id || isOwner || profile?.role === "admin") && (
                   <button
@@ -6648,16 +6594,6 @@ function ProjectFiles({ projectId, profile, client, showToast, isOwner }) {
           <Paperclip size={12} strokeWidth={2.4} />
           {uploading ? "Загрузка…" : "Прикрепить файл"}
         </button>
-        {/* Переключатель приватности для следующей загрузки */}
-        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", userSelect: "none" }}>
-          <input
-            type="checkbox"
-            checked={uploadPublic}
-            onChange={e => setUploadPublic(e.target.checked)}
-            style={{ accentColor: "#d4af37" }}
-          />
-          <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>Публичный</span>
-        </label>
         <span style={{ fontSize: 10, color: "#404040", marginLeft: "auto" }}>макс. 20 МБ</span>
       </div>
     </div>
@@ -9054,162 +8990,11 @@ function BackupPanel({ projects, txs, client, ownerId, onImported, onClose, show
 // ════════════════════════════════════════════════════════════════════════════
 // REPORT VIEWER (тот же что в v1, без существенных изменений)
 // ════════════════════════════════════════════════════════════════════════════
-// Насыщенные цвета стадий для СВЕТЛОЙ печатной темы (контраст текста на белом).
-const REPORT_STAGE_COLOR = {
-  "Поиск исполнителя":"#3b6fb0","В работе":"#b08900","Сдан заказчику":"#0a8f5b",
-  "Оплачен":"#0a8f5b","Архив":"#555",
-};
-
-// Таблица отчёта (ПК). isClient прячет колонки «Оплачено»/«Остаток».
-function ReportTable({ projects, isClient, fmtDeadline }) {
-  const cols = isClient
-    ? ["Проект / Клиент","Тип работ","Исполнитель","Стадия","По договору","Дедлайн"]
-    : ["Проект / Клиент","Тип работ","Исполнитель","Стадия","По договору","Оплачено","Остаток","Дедлайн"];
-  return (
-    <div style={{background:"#fff",borderRadius:14,border:"1px solid #e6e9ee",overflow:"hidden",marginBottom:18}}>
-      <table style={{width:"100%",borderCollapse:"collapse"}}>
-        <thead>
-          <tr style={{background:"#f0f3f7"}}>
-            {cols.map((h,i)=>(
-              <th key={h} style={{padding:"10px 14px",fontSize:9.5,fontWeight:700,textTransform:"uppercase",
-                letterSpacing:".1em",color:"#5b626d",borderBottom:"2px solid #e6e9ee",
-                textAlign:i>=4?"right":"left"}}>{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {projects.map((p,i)=>{
-            const contract=+p.contractSum||0,paid=+p.paidAmount||0,debt=contract-paid;
-            const c=REPORT_STAGE_COLOR[p.stage]||"#b08900";
-            return (
-              <tr key={p.id} style={{background:i%2===0?"#fff":"#fafbfc"}}>
-                <td style={{padding:"10px 14px",borderBottom:"1px solid #eef1f4"}}>
-                  <div style={{fontWeight:700,color:"#0a0a0a",fontSize:13}}>{p.name}</div>
-                  {p.client&&<div style={{color:"#5b626d",fontSize:11,marginTop:1}}>{p.client}</div>}
-                </td>
-                <td style={{padding:"10px 14px",borderBottom:"1px solid #eef1f4",fontSize:12,color:"#404040"}}>{p.type||"—"}</td>
-                <td style={{padding:"10px 14px",borderBottom:"1px solid #eef1f4",fontSize:12,color:"#404040"}}>{p.executor||"—"}</td>
-                <td style={{padding:"10px 14px",borderBottom:"1px solid #eef1f4"}}>
-                  <span style={{display:"inline-block",padding:"2px 9px",borderRadius:20,fontSize:11,fontWeight:700,background:c+"1f",color:c}}>{p.stage}</span>
-                </td>
-                <td style={{padding:"10px 14px",borderBottom:"1px solid #eef1f4",textAlign:"right",fontWeight:600,color:"#0a0a0a",fontSize:13}}>{contract>0?fmt(contract):"—"}</td>
-                {!isClient&&<td style={{padding:"10px 14px",borderBottom:"1px solid #eef1f4",textAlign:"right",fontWeight:700,color:"#0a8f5b",fontSize:13}}>{paid>0?fmt(paid):"—"}</td>}
-                {!isClient&&<td style={{padding:"10px 14px",borderBottom:"1px solid #eef1f4",textAlign:"right",fontWeight:700,fontSize:13,color:debt>0?"#cc3333":"#0a8f5b"}}>{contract>0?(debt>0?fmt(debt):"✓"):"—"}</td>}
-                <td style={{padding:"10px 14px",borderBottom:"1px solid #eef1f4",textAlign:"right",fontSize:12,color:"#5b626d"}}>{fmtDeadline(p.deadline)}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-// Карточки отчёта (телефон). Каждый проект — карточка «поле: значение».
-function ReportCards({ projects, isClient, fmtDeadline }) {
-  const Row = ({ label, value, color }) => (
-    <div style={{display:"flex",justifyContent:"space-between",gap:10,fontSize:12.5,padding:"3px 0"}}>
-      <span style={{color:"#5b626d"}}>{label}</span>
-      <span style={{color:color||"#1c1c1a",fontWeight:600,textAlign:"right"}}>{value}</span>
-    </div>
-  );
-  return (
-    <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:18}}>
-      {projects.map(p=>{
-        const contract=+p.contractSum||0,paid=+p.paidAmount||0,debt=contract-paid;
-        const c=REPORT_STAGE_COLOR[p.stage]||"#b08900";
-        return (
-          <div key={p.id} style={{background:"#fff",borderRadius:12,border:"1px solid #e6e9ee",padding:"12px 14px"}}>
-            <div style={{fontWeight:800,color:"#0a0a0a",fontSize:14}}>{p.name}</div>
-            {p.client&&<div style={{color:"#5b626d",fontSize:12}}>{p.client}</div>}
-            <div style={{marginTop:8,borderTop:"1px solid #eef1f4",paddingTop:6}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,fontSize:12.5,padding:"3px 0"}}>
-                <span style={{color:"#5b626d"}}>Стадия</span>
-                <span style={{display:"inline-block",padding:"1px 9px",borderRadius:20,fontSize:11,fontWeight:700,background:c+"1f",color:c}}>{p.stage}</span>
-              </div>
-              <Row label="Тип" value={p.type||"—"}/>
-              <Row label="Исполнитель" value={p.executor||"—"}/>
-              <Row label="По договору" value={contract>0?fmt(contract):"—"}/>
-              {!isClient&&<Row label="Оплачено" value={paid>0?fmt(paid):"—"} color="#0a8f5b"/>}
-              {!isClient&&<Row label="Остаток" value={contract>0?(debt>0?fmt(debt):"✓"):"—"} color={debt>0?"#cc3333":"#0a8f5b"}/>}
-              <Row label="Дедлайн" value={fmtDeadline(p.deadline)}/>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// Презентационный документ отчёта — ЕДИНЫЙ источник для экрана и печати.
-// Только JSX (React экранирует текст) → XSS невозможен (раньше был innerHTML).
-function ReportDocument({ projects, mode, dateStr, sourceLabel, isMobile }) {
-  const isClient = mode === "client";
-  const totalContract = projects.reduce((s,p)=>s+(+p.contractSum||0),0);
-  const totalPaid     = projects.reduce((s,p)=>s+(+p.paidAmount||0),0);
-  const totalDebt     = totalContract - totalPaid;
-  const fmtDeadline = (d)=> d ? new Date(d+"T00:00:00").toLocaleDateString("ru-RU",{day:"numeric",month:"short"}) : "—";
-
-  const kpis = isClient
-    ? [{l:"Сумма договоров",v:fmt(totalContract),c:"#bcd3ff"}]
-    : [
-        {l:"Сумма договоров",v:fmt(totalContract),c:"#bcd3ff"},
-        {l:"Получено",       v:fmt(totalPaid),     c:"#7ef0c0"},
-        {l:"К получению",    v:fmt(totalDebt),     c:totalDebt>0?"#ffb0b0":"#7ef0c0"},
-        {l:"% оплаты",       v:`${totalContract>0?Math.round(totalPaid/totalContract*100):0}%`, c:"#fff"},
-      ];
-
-  return (
-    <div style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",background:"#f4f6f9",
-                 minHeight:"100%",padding:isMobile?"18px 12px":"28px 24px",
-                 WebkitPrintColorAdjust:"exact",printColorAdjust:"exact"}}>
-      <div style={{maxWidth:1050,margin:"0 auto"}}>
-
-        <div style={{background:"linear-gradient(135deg,#0a0a0a,#1c1c1a)",borderRadius:16,
-                     padding:isMobile?"20px 18px":"28px 36px",color:"#fff",marginBottom:18}}>
-          <div style={{fontSize:isMobile?18:21,fontWeight:900,letterSpacing:"-.02em",marginBottom:4}}>
-            <span style={{color:"#d4af37"}}>КЛИМАТ-ПРО</span> — Отчёт по проектам
-          </div>
-          <div style={{fontSize:12.5,opacity:.72}}>Сформирован {dateStr} · {sourceLabel} · {projects.length} проектов</div>
-          <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr 1fr":`repeat(${kpis.length},minmax(120px,1fr))`,gap:10,marginTop:16}}>
-            {kpis.map(k=>(
-              <div key={k.l} style={{background:"rgba(255,255,255,.12)",borderRadius:12,padding:"11px 16px"}}>
-                <div style={{fontSize:9.5,opacity:.72,textTransform:"uppercase",letterSpacing:".1em",fontWeight:700}}>{k.l}</div>
-                <div style={{fontSize:isMobile?16:19,fontWeight:900,color:k.c,marginTop:4}}>{k.v}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {projects.length===0
-          ? <div style={{textAlign:"center",padding:48,color:"#8a8f98",fontSize:14}}>Нет проектов</div>
-          : isMobile
-            ? <ReportCards projects={projects} isClient={isClient} fmtDeadline={fmtDeadline}/>
-            : <ReportTable projects={projects} isClient={isClient} fmtDeadline={fmtDeadline}/>}
-
-        {projects.some(p=>p.notes)&&(
-          <div style={{background:"#fff",borderRadius:12,border:"1px solid #e6e9ee",padding:"16px 20px",marginBottom:16}}>
-            <div style={{fontSize:11,fontWeight:700,color:"#5b626d",textTransform:"uppercase",letterSpacing:".1em",marginBottom:10}}>Примечания</div>
-            {projects.filter(p=>p.notes).map(p=>(
-              <div key={p.id} style={{marginBottom:6,fontSize:13,color:"#1c1c1a"}}>
-                <b>{p.name}:</b> <span style={{color:"#404040"}}>{p.notes}</span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div style={{textAlign:"center",fontSize:12,color:"#9aa1ab",paddingBottom:16}}>КЛИМАТ-ПРО · {dateStr}</div>
-      </div>
-    </div>
-  );
-}
-
-function ReportViewer({ projects, onClose, presetProjects = null }) {
-  const isMobile = useIsMobile();
+function ReportViewer({ projects, client, profile, onClose, presetProjects = null }) {
   const [stage, setStage] = useState("all");
-  const [mode, setMode] = useState("full");        // full | client
-  const [showPreview, setShowPreview] = useState(false);
-
+  const [rows, setRows] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   const stages = ["all", ...PROJECT_STAGES.filter(s => s !== "Архив")];
   const labels  = {"all":"Все активные",...Object.fromEntries(PROJECT_STAGES.map(s=>[s,s]))};
 
@@ -9217,82 +9002,26 @@ function ReportViewer({ projects, onClose, presetProjects = null }) {
     ? presetProjects
     : (stage === "all" ? projects.filter(p => p.stage !== "Архив") : projects.filter(p => p.stage === stage));
 
-  const dateStr     = new Date().toLocaleDateString("ru-RU",{day:"numeric",month:"long",year:"numeric"});
   const sourceLabel = presetProjects ? "Выбранные проекты" : labels[stage];
-
-  // @media print: печатаем ТОЛЬКО область отчёта (тот же React-DOM), без innerHTML-дубля.
-  useEffect(() => {
-    const id = "report-print-style";
-    if (document.getElementById(id)) return;
-    const st = document.createElement("style");
-    st.id = id;
-    st.textContent = `
-      @media print {
-        body * { visibility: hidden !important; }
-        #report-print-area, #report-print-area * { visibility: visible !important; }
-        #report-print-area { position: absolute !important; left: 0; top: 0; width: 100%; }
-        .report-no-print { display: none !important; }
-      }
-    `;
-    document.head.appendChild(st);
-    return () => { const el=document.getElementById(id); if(el) el.remove(); };
-  }, []);
-
-  if (showPreview) return (
-    <div style={{position:"fixed",inset:0,zIndex:200,background:"#f4f6f9",overflowY:"auto"}}>
-      <div className="report-no-print" style={{
-        position:"sticky",top:0,zIndex:10,background:"#1c1c1a",padding:isMobile?"10px 14px":"10px 24px",
-        display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,boxShadow:"0 2px 12px rgba(0,0,0,.3)"
-      }}>
-        <button onClick={()=>setShowPreview(false)} style={{
-          padding:"8px 14px",borderRadius:8,background:"rgba(255,255,255,.12)",border:"none",
-          color:"#fff",fontWeight:600,fontSize:13,cursor:"pointer"
-        }}>← Назад</button>
-        <div style={{display:"flex",gap:8,alignItems:"center"}}>
-          {!isMobile&&<span style={{fontSize:12,color:"#9aa1ab"}}>или Ctrl/Cmd+P</span>}
-          <button onClick={()=>window.print()} style={{
-            padding:"8px 16px",borderRadius:8,background:"#d4af37",border:"none",
-            color:"#1c1c1a",fontWeight:800,fontSize:13,cursor:"pointer"
-          }}>🖨 Печать / Сохранить PDF</button>
-        </div>
-      </div>
-      <div id="report-print-area">
-        <ReportDocument projects={visible} mode={mode} dateStr={dateStr} sourceLabel={sourceLabel} isMobile={isMobile}/>
-      </div>
-    </div>
-  );
-
+  const openReport = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      setRows(await loadPersonalReport(client, visible.map(p => p.id), profile.id));
+    } catch (err) {
+      setError("Отчёт не сформирован. " + (err.message || "Повторите загрузку."));
+    } finally { setBusy(false); }
+  };
+  if (rows) return <PaymentReport rows={rows} author={profile.name || profile.email} source={sourceLabel} onBack={() => setRows(null)} />;
   return (
-    <Modal title="📄 Экспорт отчёта" onClose={onClose} maxWidth={460}>
-      <p style={{fontSize:13,color:"var(--text-secondary)",marginBottom:16,lineHeight:1.6}}>
-        {presetProjects
-          ? `Отчёт по выбранным проектам (${presetProjects.length}). Нажми «Открыть», затем «Печать / Сохранить PDF».`
-          : "Отчёт откроется здесь. Нажми «Печать / Сохранить PDF» — браузер сохранит документ для отправки заказчику."}
-      </p>
-
-      <div style={{marginBottom:16}}>
-        <p style={{fontSize:10,fontWeight:700,color:"var(--text-tertiary)",textTransform:"uppercase",letterSpacing:"0.12em",marginBottom:8}}>Вид отчёта</p>
-        <div style={{display:"flex",gap:6}}>
-          {[{k:"full",l:"Полный"},{k:"client",l:"Для заказчика"}].map(o=>(
-            <button key={o.k} onClick={()=>setMode(o.k)} style={{
-              flex:1,padding:"8px 12px",borderRadius:10,fontSize:12.5,fontWeight:700,cursor:"pointer",
-              background:mode===o.k?"#d4af37":"#141414",
-              color:mode===o.k?"#1c1c1a":"#cfcfca",
-              border:`1px solid ${mode===o.k?"#d4af37":"rgba(255,255,255,0.10)"}`,transition:"all .15s",
-            }}>{o.l}</button>
-          ))}
-        </div>
-        <p style={{fontSize:11,color:"var(--text-tertiary)",marginTop:6,lineHeight:1.4}}>
-          {mode==="client" ? "Без «Оплачено» и «Остаток» — только договор, стадии и сроки." : "Все финансы: договор, оплачено, остаток, % оплаты."}
-        </p>
-      </div>
-
+    <Modal title="Отчёт по оплатам" onClose={onClose} maxWidth={460}>
+      {error && <p role="alert" className="text-red-300 mb-3">{error}</p>}
       {!presetProjects && (
         <div style={{marginBottom:16}}>
           <p style={{fontSize:10,fontWeight:700,color:"var(--text-tertiary)",textTransform:"uppercase",letterSpacing:"0.12em",marginBottom:8}}>Фильтр по стадии</p>
           <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
             {stages.map(s=>(
-              <button key={s} onClick={()=>setStage(s)} style={{
+              <button key={s} disabled={busy} onClick={()=>setStage(s)} style={{
                 padding:"5px 12px",borderRadius:20,fontSize:12,fontWeight:600,cursor:"pointer",
                 background:stage===s?"#d4af37":"#141414",
                 color:stage===s?"#1c1c1a":"var(--text-secondary)",
@@ -9310,11 +9039,11 @@ function ReportViewer({ projects, onClose, presetProjects = null }) {
         <span style={{fontSize:13,color:"var(--text-secondary)"}}>Проектов в отчёте</span>
         <span style={{fontSize:18,fontWeight:900,color:"#e8c860"}}>{visible.length}</span>
       </div>
-      <button onClick={()=>setShowPreview(true)} style={{
+      <button onClick={openReport} disabled={busy || !visible.length} style={{
         width:"100%",padding:14,borderRadius:14,background:"#d4af37",border:"none",
         color:"#1c1c1a",fontSize:15,fontWeight:800,cursor:"pointer",
       }}>
-        👁 Открыть отчёт
+        {busy ? "Загружаем доли…" : "Открыть отчёт"}
       </button>
     </Modal>
   );
@@ -9957,7 +9686,7 @@ export default function App() {
                 transition: "all 0.18s",
                 fontFamily: "inherit",
               }}
-              title="Экспорт отчёта для заказчика"
+              title="Отчёт по оплатам"
             >
               <FileText size={13} strokeWidth={2.2} />
               Отчёт
@@ -10212,7 +9941,7 @@ export default function App() {
           </div>
         </div>
       )}
-      {reportModal && <ReportViewer projects={projects} presetProjects={reportProjects} onClose={()=>{ setReportModal(false); setReportProjects(null); }}/>}
+      {reportModal && <ReportViewer client={supabase} profile={profile} projects={projects} presetProjects={reportProjects} onClose={()=>{ setReportModal(false); setReportProjects(null); }}/>}
       {backupModal && <BackupPanel
         projects={projects}
         txs={txs}

@@ -154,6 +154,15 @@ Deno.serve(async (req: Request): Promise<Response> => {
         return json({ error: "bad params (x-project-id, x-filename, body required)" }, 400);
       }
 
+      // Проверяем доступ пользователя до записи тела в хранилище.
+      const access = await rest("rpc/can_use_project_files", authHeader, {
+        method: "POST",
+        body: JSON.stringify({ p_project_id: projectId }),
+      });
+      if (!access.ok || await access.json() !== true) {
+        return json({ error: "project files unavailable" }, 403);
+      }
+
       const safeName = filename.replace(/[\/\\]/g, "_");
       const diskPath = `projects/${projectId}/${crypto.randomUUID()}__${safeName}`;
 

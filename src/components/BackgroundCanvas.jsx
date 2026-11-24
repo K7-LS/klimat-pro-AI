@@ -45,16 +45,25 @@ export default function BackgroundCanvas() {
         ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
         build();
       }
+      let lastPaint = null;
+      const frameInterval = 1000 / 24;
       function frame(t) {
         if (stopped) return;
+        if (!reduce && lastPaint !== null && t - lastPaint < frameInterval - 0.5) {
+          raf = requestAnimationFrame(frame);
+          return;
+        }
+        const step = lastPaint === null ? 1 : Math.min(4, (t - lastPaint) * 0.06);
+        lastPaint = t;
         ctx.clearRect(0, 0, W, H);
         const bg = ctx.createLinearGradient(0, 0, 0, H);
         bg.addColorStop(0, "#0a0a0a"); bg.addColorStop(1, "#0c0b08");
         ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
         ctx.globalCompositeOperation = "lighter";
         // Сглаженный (инерционный) отклик на курсор/скролл — параллакс блобов по глубине.
-        easeX += (tgtX - easeX) * 0.085; easeY += (tgtY - easeY) * 0.085;
-        easeScroll += (tgtScroll - easeScroll) * 0.08;
+        const ease = 1 - Math.pow(0.915, step);
+        easeX += (tgtX - easeX) * ease; easeY += (tgtY - easeY) * ease;
+        easeScroll += (tgtScroll - easeScroll) * (1 - Math.pow(0.92, step));
         const pX = easeX - 0.5, pY = easeY - 0.5;
         const sShift = (easeScroll * 0.05) % 90;
         for (let bi = 0; bi < blobs.length; bi++) {
@@ -68,7 +77,7 @@ export default function BackgroundCanvas() {
           g.addColorStop(1, "rgba(212,175,55,0)");
           ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, b.r, 0, 6.2832); ctx.fill();
         }
-        for (const nd of nodes) { nd.x += nd.vx; nd.y += nd.vy; if (nd.x < 0 || nd.x > W) nd.vx *= -1; if (nd.y < 0 || nd.y > H) nd.vy *= -1; }
+        for (const nd of nodes) { nd.x += nd.vx * step; nd.y += nd.vy * step; if (nd.x < 0 || nd.x > W) nd.vx *= -1; if (nd.y < 0 || nd.y > H) nd.vy *= -1; }
         ctx.lineWidth = 1;
         for (let a = 0; a < nodes.length; a++) {
           for (let c = a + 1; c < nodes.length; c++) {
@@ -83,7 +92,7 @@ export default function BackgroundCanvas() {
         }
         for (const nd of nodes) { ctx.beginPath(); ctx.arc(nd.x, nd.y, nd.r, 0, 6.2832); ctx.fillStyle = "rgba(240,216,120,0.5)"; ctx.fill(); }
         for (const sp of sparks) {
-          sp.y += sp.dy; if (sp.y < 0) { sp.y = H; sp.x = Math.random() * W; }
+          sp.y += sp.dy * step; if (sp.y < 0) { sp.y = H; sp.x = Math.random() * W; }
           let tw = sp.base + Math.sin(t * 0.001 * sp.sp + sp.tw) * 0.35; if (tw < 0) tw = 0;
           ctx.beginPath(); ctx.arc(sp.x, sp.y, sp.r, 0, 6.2832); ctx.fillStyle = "rgba(245,230,170," + tw + ")"; ctx.fill();
         }

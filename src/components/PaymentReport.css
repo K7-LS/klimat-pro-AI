@@ -1,0 +1,35 @@
+.payment-report { position:fixed; inset:0; z-index:210; overflow:auto; background:#e9edf0; color:#1c2a31; font:14px/1.45 "Geist Variable","Segoe UI",sans-serif }
+.payment-report nav { position:sticky; top:0; display:flex; justify-content:space-between; background:#1c2225; padding:10px 4% }
+.payment-report nav button { background:#f7f5ed; border:0; border-radius:6px; color:#202927; padding:8px 15px; cursor:pointer }
+.payment-report article { background:white; max-width:1060px; margin:24px auto; padding:clamp(18px,4vw,48px); box-shadow:0 2px 16px #22334414 }
+.payment-report header,.payment-totals { display:flex; justify-content:space-between; align-items:baseline; gap:12px }
+.payment-report header { border-bottom:2px solid #a5863e; padding-bottom:14px; letter-spacing:.04em }
+.payment-report h1 { font-size:clamp(26px,4vw,38px); margin:24px 0 0; font-weight:650; letter-spacing:-.04em }
+.payment-report h2 { font-size:18px; margin-top:20px }
+.payment-report p,.payment-report time,.payment-report small { color:#4a5962 }
+.payment-totals { background:#eff3f3; padding:18px; margin:20px 0; flex-wrap:wrap }
+.payment-totals div { flex:1; min-width:110px }
+.payment-report small,.payment-totals b { display:block }
+.payment-totals b { font-size:clamp(17px,2.4vw,25px); font-variant-numeric:tabular-nums }
+.payment-report table { width:100%; border-collapse:collapse; font-size:13px }
+.payment-report th,.payment-report td { text-align:left; padding:10px 6px; border-bottom:1px solid #d6dddd; overflow-wrap:anywhere }
+.payment-report th:nth-child(n+3),.payment-report td:nth-child(n+3) { text-align:right; font-variant-numeric:tabular-nums }
+.payment-report th { font-size:11px; color:#495659 }
+.payment-report .payment-basis { font-size:12px; margin-top:14px }
+@media screen and (max-width:650px) {
+  .payment-report article { margin:0; }
+  .payment-report thead { display:none }
+  .payment-report tr,.payment-report td { display:block }
+  .payment-report td { padding:4px 0; border:0 }
+  .payment-report tr { border-top:1px solid #c9cece; padding:10px 0 }
+  .payment-report td[data-label] { display:flex; justify-content:space-between; gap:12px }
+  .payment-report td[data-label]::before { content:attr(data-label) }
+}
+@media print {
+  body:has(.payment-report) > :not(.payment-report) { display:none !important }
+  html:has(.payment-report),body:has(.payment-report) { height:auto !important; overflow:visible !important; background:white !important }
+  .payment-report { position:static; overflow:visible; background:white; print-color-adjust:exact }
+  .payment-report nav { display:none }
+  .payment-report article { padding:0; margin:0; box-shadow:none }
+  .payment-report tr,.payment-totals { break-inside:avoid }
+}
