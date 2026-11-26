@@ -11,6 +11,7 @@ import { projectRemaining, paymentsByProject as groupPaymentsByProject, clientTo
 import { validateNewUser } from "./lib/userCreateValidation.js";
 import { parseYandexRows, classifyOperation, categorize, dedupe, normalizeMerchant, hashOperation } from "./lib/bankParsers.js";
 import { PANEL_IDS, deserializeAppearance, filterAppearancePanelsForRole, resetAppearance, serializeAppearance, shouldUseLegacyCardTilt, withoutPanelOverride } from "./lib/appearance.js";
+import { formHasChanges, ModalDraftContext, useBackdropDismiss, useGuardedClose, useModalDraft } from "./components/UnsavedChanges";
 import TaskQueueFilters from "./components/TaskQueueFilters";
 import NotificationBell from "./components/NotificationBell";
 import MagneticButton from "./components/MagneticButton";
@@ -1665,10 +1666,15 @@ function Toast({ visible, text, type = "success" }) {
 // ────────────────────────────────────────────────────────────────────────────
 // MODAL — модальное окно с анимацией масштабирования и затемнением фона
 // ────────────────────────────────────────────────────────────────────────────
-function Modal({ title, onClose, children, maxWidth = 480, icon }) {
+function Modal({ title, onClose, children, maxWidth = 480, icon, dirty = false, busy = false }) {
+  const drafts = useRef(new Set()).current;
+  const { requestClose, confirmation } = useGuardedClose(onClose, () => dirty || drafts.size > 0, busy);
+  const backdrop = useBackdropDismiss(requestClose);
   return (
+    <>
     <AnimatePresence>
       <motion.div
+        className="kp-modal-backdrop"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
@@ -1680,9 +1686,10 @@ function Modal({ title, onClose, children, maxWidth = 480, icon }) {
           background: "rgba(8,9,15,0.80)",
           backdropFilter: "blur(8px)",
         }}
-        onClick={onClose}
+        {...backdrop}
       >
         <motion.div
+          role="dialog" aria-modal="true" aria-label={title}
           initial={{ opacity: 0, scale: 0.94, y: 12 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.96, y: 4 }}
@@ -1712,7 +1719,7 @@ function Modal({ title, onClose, children, maxWidth = 480, icon }) {
               }}>{title}</h3>
             </div>
             <button
-              onClick={onClose}
+              type="button" aria-label="Закрыть" onClick={requestClose}
               style={{
                 background: "rgba(255,255,255,0.04)",
                 border: "1px solid rgba(255,255,255,0.06)",
@@ -1729,10 +1736,16 @@ function Modal({ title, onClose, children, maxWidth = 480, icon }) {
               <X size={16} strokeWidth={2.2} />
             </button>
           </div>
-          <div style={{ padding: "20px 22px" }}>{children}</div>
+          <ModalDraftContext.Provider value={{ drafts, requestClose }}>
+            <div style={{ padding: "20px 22px" }}>
+              {typeof children === "function" ? children(requestClose) : children}
+            </div>
+          </ModalDraftContext.Provider>
         </motion.div>
       </motion.div>
     </AnimatePresence>
+    {confirmation}
+    </>
   );
 }
 
@@ -2183,6 +2196,9 @@ function ProjectForm({ initial, onSave, onClose, saving, client, profile, showTo
   const [activeTab, setActiveTab] = useState("main");
   const [moreFields, setMoreFields] = useState(false);
   const [discussion, setDiscussion] = useState("customer");
+  const [taskDraft, setTaskDraft] = useState("");
+  const [commentDraft, setCommentDraft] = useState("");
+  const [chatDraft, setChatDraft] = useState("");
   const [f, setF] = useState(initial ? {
     ...initial,
     shares: (initial.shares || []).map(s => ({
@@ -2215,6 +2231,7 @@ function ProjectForm({ initial, onSave, onClose, saving, client, profile, showTo
     // №7: черновик команды при СОЗДАНИИ (после insert добавится в project_members)
     teamDraft: [],
   });
+  const initialForm = useRef(f);
   const s = (k, v) => setF(p => ({ ...p, [k]: v }));
 
   // №10: история действий проекта (5-я вкладка) — грузим при открытии вкладки, без realtime
@@ -2275,6 +2292,8 @@ function ProjectForm({ initial, onSave, onClose, saving, client, profile, showTo
   const [shareUserQuery, setShareUserQuery] = useState("");
   const [shareUserResults, setShareUserResults] = useState([]);
   const [shareExtName, setShareExtName] = useState("");
+  const requestClose = useModalDraft(formHasChanges(f, initialForm.current)
+    || !!(execExtName || shareExtName || taskDraft || commentDraft || chatDraft));
 
   useEffect(() => {
     if (!client || !shareUserQuery.trim()) { setShareUserResults([]); return; }
@@ -2312,6 +2331,7 @@ function ProjectForm({ initial, onSave, onClose, saving, client, profile, showTo
       const shares = result.data.map(shareDbToJs).map(sh => ({ ...sh, label: sh.participantLabel || sh.participantName || "участник" }));
       if (current) {
         originalFinance.current = { payments, shares };
+        initialForm.current = { ...initialForm.current, payments, shares };
         setF(p => ({ ...p, payments, shares }));
         setPaymentLoad("ready");
       }
@@ -2978,11 +2998,13 @@ function ProjectForm({ initial, onSave, onClose, saving, client, profile, showTo
           ))}
         </div>
         {discussion === "customer"
-          ? <ClientChat projectId={initial.id} client={client} showToast={showToast} />
-          : <CommentsSection projectId={initial.id} profile={profile} client={client} showToast={showToast} isOwner={isOwner} />}
+          ? <ClientChat projectId={initial.id} client={client} showToast={showToast} text={chatDraft} setText={setChatDraft} />
+          : <CommentsSection projectId={initial.id} profile={profile} client={client} showToast={showToast} isOwner={isOwner}
+            text={commentDraft} setText={setCommentDraft} />}
       </div>}
       {initial?.id && client && activeTab === "tasks" &&
-        <ProjectTasksSection projectId={initial.id} projectName={initial.name} client={client} profile={profile} showToast={showToast} />}
+        <ProjectTasksSection projectId={initial.id} projectName={initial.name} client={client} profile={profile} showToast={showToast}
+          title={taskDraft} setTitle={setTaskDraft} />}
       {activeTab==="history" && (<>
         {initial && initial.id
           ? (actLoading ? <Empty text="Загружаем историю…" /> : <ActivityFeed items={projActivity} />)
@@ -2990,7 +3012,7 @@ function ProjectForm({ initial, onSave, onClose, saving, client, profile, showTo
       </>)}
       {paymentLoad === "error" && <p role="alert">Доли или платежи не загрузились. Чтобы сохранить карточку, <button type="button" className={BTN.ghost} onClick={() => setPaymentAttempt(n => n + 1)}>повторите загрузку</button>.</p>}
       <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
-        <button onClick={onClose} className={BTN.ghost} style={{ flex: 1 }} disabled={saving}>Отмена</button>
+        <button onClick={requestClose ?? onClose} className={BTN.ghost} style={{ flex: 1 }} disabled={saving}>Отмена</button>
         <button onClick={() => { if(!f.name||!f.name.trim()){ setActiveTab("main"); showToast("Введите название объекта","error"); return; } onSave(f, { sharesChanged: originalFinance.current ? originalFinance.current.shares !== f.shares : !!f.shares?.length,
           paymentsChanged: originalFinance.current ? originalFinance.current.payments !== f.payments : !!f.payments?.length }); }} className={BTN.primary} style={{ flex: 2, opacity: (saving || !paymentsReady) ? 0.6 : 1 }} disabled={saving || !paymentsReady}>
           {saving ? "Сохраняем..." : paymentLoad === "error" ? "Сохранение недоступно" : !paymentsReady ? "Загрузка финансов…" : initial?.id ? "Сохранить изменения" : "Создать и открыть"}
@@ -3007,6 +3029,8 @@ function TxForm({ initial, onSave, onClose, saving }) {
   const [f, setF] = useState(initial || {
     date:todayStr(),type:"income",category:"Проектирование",amount:"",description:""
   });
+  const initialForm = useRef(f);
+  const requestClose = useModalDraft(formHasChanges(f, initialForm.current));
   const s = (k,v) => setF(p=>({...p,[k]:v}));
   const cats = f.type==="income" ? INCOME_CATS : EXPENSE_CATS;
 
@@ -3037,7 +3061,7 @@ function TxForm({ initial, onSave, onClose, saving }) {
         <StyledInput value={f.description} onChange={e=>s("description",e.target.value)}/>
       </Field>
       <div style={{display:"flex",gap:10,marginTop:4}}>
-        <button onClick={onClose} className={BTN.ghost} style={{flex:1}} disabled={saving}>Отмена</button>
+        <button onClick={requestClose ?? onClose} className={BTN.ghost} style={{flex:1}} disabled={saving}>Отмена</button>
         <button onClick={()=>onSave(f)} className={BTN.primary} style={{flex:2,opacity:saving?0.6:1}} disabled={saving}>
           {saving?"Сохраняем...":"Сохранить"}
         </button>
@@ -4191,7 +4215,7 @@ function Projects({ projects, setProjects, clients, client, profile, ownerId, sh
       })()}
 
       {modal&&(
-        <Modal maxWidth={860} title={modal==="add"?"Новый объект":modal.name} onClose={()=>!saving&&setModal(null)}>
+        <Modal maxWidth={860} busy={saving} title={modal==="add"?"Новый объект":modal.name} onClose={()=>!saving&&setModal(null)}>
           <ProjectForm key={modal === "add" ? "new" : modal.id}
             initial={modal === "add" ? null : { ...modal, shares: (sharesByProject || {})[modal.id] || [] }}
             onSave={saveProject}
@@ -4396,11 +4420,10 @@ async function extractYandexPdfRows(file) {
 // TASKS (v6.4a) — вкладка Задачи: список + фильтры, доска (drag-drop), модалка
 // ════════════════════════════════════════════════════════════════════════════
 
-function ProjectTasksSection({ projectId, projectName, client, profile, showToast }) {
+function ProjectTasksSection({ projectId, projectName, client, profile, showToast, title, setTitle }) {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
-  const [title, setTitle] = useState("");
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState("all");
   const [adding, setAdding] = useState(false);
@@ -4422,7 +4445,7 @@ function ProjectTasksSection({ projectId, projectName, client, profile, showToas
     try {
       const id = await createTask(client, { projectId, title, status: "Новая", priority: "Обычный" }, profile.id);
       setFilter("all");
-      setTitle("");
+      setTitle(current => current === title ? "" : current);
       await reload();
       await notifyTask(client, "task_created", id, profile.id);
     } catch (e) { showToast("Ошибка: " + (e.message || ""), "error"); }
@@ -4633,6 +4656,7 @@ function TaskWorkflowButton({ task, client, profile, showToast, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [revising, setRevising] = useState(false);
   const [revText, setRevText] = useState("");
+  useModalDraft(revising && !!revText);
   if (!task.id) return null;
   const isAuthor = task.authorId === profile.id || profile.role === "admin";
   const isAssignee = task.assignedTo === profile.id || profile.role === "admin";
@@ -4718,6 +4742,7 @@ function TaskModal({ task, client, profile, projects, fixedProject = false, real
     status: task.status || "Новая", priority: task.priority || "Обычный",
     dueDate: task.dueDate || "",
   });
+  const initialForm = useRef(form);
   const [saving, setSaving] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
 
@@ -4743,6 +4768,12 @@ function TaskModal({ task, client, profile, projects, fixedProject = false, real
   const [cmtText, setCmtText] = useState("");
   const [cmtIsQuestion, setCmtIsQuestion] = useState(false);
   const [cmtSending, setCmtSending] = useState(false);
+  const drafts = useRef(new Set()).current;
+  const { requestClose, confirmation } = useGuardedClose(onClose, () =>
+    formHasChanges(form, initialForm.current) || !!cmtText || cmtIsQuestion
+    || (editingTz && tzDraft !== currentTz) || drafts.size > 0,
+    saving || tzBusy || cmtSending);
+  const backdrop = useBackdropDismiss(requestClose);
 
   const reloadVersions = useCallback(async () => {
     if (isNew || !task.id) return;
@@ -4894,7 +4925,8 @@ function TaskModal({ task, client, profile, projects, fixedProject = false, real
   };
 
   return createPortal(
-    <div style={{ position:"fixed", inset:0, zIndex:120, display:"flex", alignItems:"center", justifyContent:"center", padding:16, background:"rgba(2,8,23,0.92)", backdropFilter:"blur(6px)" }} onClick={onClose}>
+    <>
+    <div className="task-modal-backdrop" style={{ position:"fixed", inset:0, zIndex:120, display:"flex", alignItems:"center", justifyContent:"center", padding:16, background:"rgba(2,8,23,0.92)", backdropFilter:"blur(6px)" }} {...backdrop}>
       <div role="dialog" aria-modal="true" aria-label={isNew ? "Новая задача" : "Карточка задачи"}
         style={{ background:"#141414", border:"1px solid rgba(255,255,255,0.06)", borderRadius:20, padding:24, width:"min(620px,92vw)", maxHeight:"90vh", overflowY:"auto", boxShadow:"0 25px 60px rgba(0,0,0,.6)" }} onClick={e => e.stopPropagation()}>
         <div style={{ marginBottom: 14 }}>
@@ -4917,8 +4949,9 @@ function TaskModal({ task, client, profile, projects, fixedProject = false, real
           ); })()}
         </div>
         {nextStep && <p className="task-next-step"><strong>{nextStep.label}</strong> · {nextStep.ownerName}</p>}
-        {!isNew && <TaskWorkflowButton task={task} client={client} profile={profile}
-                     showToast={showToast} onChanged={onSaved} />}
+        {!isNew && <ModalDraftContext.Provider value={{ drafts, requestClose }}>
+          <TaskWorkflowButton task={task} client={client} profile={profile} showToast={showToast} onChanged={onSaved} />
+        </ModalDraftContext.Provider>}
         {!isNew && <TaskPhotosSection task={task} client={client} profile={profile} showToast={showToast} />}
         <StyledInput style={{ marginBottom: 8 }} placeholder="Заголовок"
                value={form.title} onChange={e => set("title", e.target.value)} />
@@ -5105,13 +5138,15 @@ function TaskModal({ task, client, profile, projects, fixedProject = false, real
                 finally { setSaving(false); }
               }} className={BTN.ghost}>Отменить задачу</button>
             )}
-            <button onClick={onClose} className={BTN.ghost}>Отмена</button>
+            <button onClick={requestClose} className={BTN.ghost}>Отмена</button>
             <button onClick={save} disabled={saving} className={BTN.primary}>
               {saving ? "…" : "Сохранить"}</button>
           </div>
         </div>
       </div>
-    </div>, document.body
+    </div>
+    {confirmation}
+    </>, document.body
   );
 }
 
@@ -6012,7 +6047,7 @@ function Finance({ txs, setTxs, client, ownerId, showToast, projects = [], share
       {modal&&(
         <Modal
           title={modal==="add"?"Новая запись":"Редактировать запись"}
-          onClose={()=>!saving&&setModal(null)}>
+          busy={saving} onClose={()=>!saving&&setModal(null)}>
           <TxForm initial={modal==="add"?null:modal} onSave={saveTx} onClose={()=>setModal(null)} saving={saving}/>
         </Modal>
       )}
@@ -6230,10 +6265,9 @@ function UserAvatar({ name, email, size = 28 }) {
 // ════════════════════════════════════════════════════════════════════════════
 // COMMENTS SECTION — секция комментариев в форме проекта (v2.0)
 // ════════════════════════════════════════════════════════════════════════════
-function CommentsSection({ projectId, profile, client, showToast, isOwner }) {
+function CommentsSection({ projectId, profile, client, showToast, isOwner, text, setText }) {
   const [comments, setComments] = useState([]);
   const [loading, setLoading]   = useState(true);
-  const [text, setText]         = useState("");
   const [sending, setSending]   = useState(false);
   const [showResolved, setShowResolved] = useState(false);
 
@@ -6258,7 +6292,7 @@ function CommentsSection({ projectId, profile, client, showToast, isOwner }) {
     try {
       const trimmed = text.trim();
       await insertProjectComment(client, projectId, trimmed);
-      setText("");
+      setText(current => current === text ? "" : current);
       await reload();
       // Уведомление всем участникам проекта (best-effort, через Edge Function)
       sendPush(client, "comment", null, {
@@ -7048,6 +7082,8 @@ function ClientForm({ initial, onSave, onClose, saving, client, showToast, onLin
     clientType: "individual", category: "regular",
     legalName: "", inn: "", address: "", city: "", notes: "",
   });
+  const initialForm = useRef(f);
+  const requestClose = useModalDraft(formHasChanges(f, initialForm.current));
   const s = (k, v) => setF(p => ({ ...p, [k]: v }));
 
   // D роль заказчика: привязка аккаунта к этой записи (только для существующей записи).
@@ -7198,7 +7234,7 @@ function ClientForm({ initial, onSave, onClose, saving, client, showToast, onLin
       )}
 
       <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
-        <button onClick={onClose} className={BTN.ghost} style={{ flex: 1 }} disabled={saving}>Отмена</button>
+        <button onClick={requestClose ?? onClose} className={BTN.ghost} style={{ flex: 1 }} disabled={saving}>Отмена</button>
         <button onClick={() => onSave(f)} className={BTN.primary} style={{ flex: 2, opacity: saving ? 0.6 : 1 }} disabled={saving}>
           {saving ? "Сохраняем..." : "Сохранить"}
         </button>
@@ -7322,8 +7358,9 @@ function CreateRequestModal({ client, showToast, onClose, onCreated }) {
   }
 
   return (
-    <Modal title="Новый проект" onClose={onClose} maxWidth={520}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+    <Modal title="Новый проект" onClose={onClose} maxWidth={520} busy={busy}
+      dirty={!!(name || description || deadline || desiredExecutorId || mode !== "quick" || assignmentMode !== "marketplace")}>
+      {requestClose => <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         <div>
           <Label>Название</Label>
           <input style={inputStyle} value={name} onChange={e => setName(e.target.value)}
@@ -7366,32 +7403,31 @@ function CreateRequestModal({ client, showToast, onClose, onCreated }) {
           </div>
         )}
         <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
-          <button className={BTN.ghost} onClick={onClose} style={{ flex: 1 }}>Отмена</button>
+          <button className={BTN.ghost} onClick={requestClose} style={{ flex: 1 }}>Отмена</button>
           <button className={BTN.primary} onClick={submit} disabled={busy} style={{ flex: 2, opacity: busy ? 0.6 : 1 }}>
             {busy ? "Отправка…" : "Отправить"}
           </button>
         </div>
-      </div>
+      </div>}
     </Modal>
   );
 }
 
 // ── Заказчик 2.0: задачи проекта заказчика + приёмка ─────────────────────────
 // Переписка заказчик↔команда по проекту. Один компонент для обеих сторон (RPC гейтит доступ).
-function ClientChat({ projectId, client, showToast }) {
+function ClientChat({ projectId, client, showToast, text, setText }) {
   const [msgs, setMsgs] = useState(null);
-  const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const reload = async () => {
     try { setMsgs(await fetchClientMessages(client, projectId)); }
     catch (e) { showToast("Ошибка переписки: " + (e.message || ""), "error"); setMsgs([]); }
   };
-  useEffect(() => { setText(""); setBusy(false); reload(); /* eslint-disable-next-line */ }, [projectId]);
+  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [projectId]);
   const send = async () => {
     const body = text.trim();
     if (!body) return;
     setBusy(true);
-    try { await postClientMessage(client, projectId, body); setText(""); await reload(); }
+    try { await postClientMessage(client, projectId, body); setText(current => current === text ? "" : current); await reload(); }
     catch (e) { showToast("Не отправлено: " + (e.message || ""), "error"); }
     finally { setBusy(false); }
   };
@@ -7468,6 +7504,7 @@ function ClientProjectTasksModal({ order, client, showToast, onClose, onChanged 
   const [tasks, setTasks] = useState(null);
   const [busyId, setBusyId] = useState(null);
   const [tab, setTab] = useState("tasks"); // tasks | messages | files
+  const [chatDraft, setChatDraft] = useState("");
 
   const reload = async () => {
     try { setTasks(await fetchTasks(client, { projectId: order.id })); }
@@ -7491,7 +7528,7 @@ function ClientProjectTasksModal({ order, client, showToast, onClose, onChanged 
     s === "Готово" ? "#6ee7a8" : s === "На проверке" ? "#f3d77b" : s === "В работе" ? "#7cc5ff" : "var(--text-tertiary)";
 
   return (
-    <Modal title={order.name} onClose={onClose} maxWidth={560}>
+    <Modal title={order.name} onClose={onClose} maxWidth={560} dirty={!!chatDraft}>
       <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
         {[["tasks","Задачи"],["messages","Сообщения"],["files","Файлы"]].map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)}
@@ -7501,7 +7538,7 @@ function ClientProjectTasksModal({ order, client, showToast, onClose, onChanged 
               color: tab === k ? "#d4af37" : "var(--text-secondary)" }}>{label}</button>
         ))}
       </div>
-      {tab === "messages" && <ClientChat projectId={order.id} client={client} showToast={showToast} />}
+      {tab === "messages" && <ClientChat projectId={order.id} client={client} showToast={showToast} text={chatDraft} setText={setChatDraft} />}
       {tab === "files" && <ClientFilesList projectId={order.id} client={client} showToast={showToast} />}
       {tab === "tasks" && (tasks === null
         ? <div style={{ color: "var(--text-secondary)", fontSize: 14 }}>Загрузка…</div>
@@ -7699,7 +7736,7 @@ function ClientProjects({ orders, client, profile, showToast, onChanged }) {
 
       {creating && <CreateRequestModal client={client} showToast={showToast}
         onClose={() => setCreating(false)} onCreated={afterCreate} />}
-      {openOrder && <ClientProjectTasksModal order={openOrder} client={client} showToast={showToast}
+      {openOrder && <ClientProjectTasksModal key={openOrder.id} order={openOrder} client={client} showToast={showToast}
         onClose={() => setOpenOrder(null)} onChanged={onChanged} />}
     </div>
   );
@@ -8074,6 +8111,7 @@ function ClientsPage({ clients, setClients, projects, client, ownerId, showToast
       {modal && (
         <Modal
           title={modal === "add" ? "Новый клиент" : "Редактировать клиента"}
+          busy={saving}
           onClose={() => !saving && setModal(null)}
           icon={<BookUser size={16} />}
           maxWidth={560}
@@ -8159,8 +8197,10 @@ function ProfileModal({ profile, client, selfTransferNames = [], onSaveSelfTrans
         .single();
       if (error) throw error;
       onProfileUpdated(data);
+      setSaveName(data.name || "");
+      setPosition(data.position || "");
       showToast("✓ Профиль обновлён");
-      onClose();
+      if (selfTransferNamesText === selfTransferNames.join("\n")) onClose();
     } catch (e) {
       showToast("Ошибка: " + (e.message || ""), "error");
     } finally {
@@ -8239,7 +8279,10 @@ function ProfileModal({ profile, client, selfTransferNames = [], onSaveSelfTrans
   return (
     <Modal
       title="Мой профиль"
-      onClose={() => !saving && onClose()}
+      onClose={onClose}
+      busy={saving || savingSelfTransferNames}
+      dirty={name !== (profile?.name || "") || position !== (profile?.position || "")
+        || selfTransferNamesText !== selfTransferNames.join("\n")}
       icon={<User size={16} />}
       maxWidth={460}
     >
