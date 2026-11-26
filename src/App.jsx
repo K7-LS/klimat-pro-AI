@@ -6,11 +6,12 @@ import { loadPersonalReport } from "./lib/personalReport";
 import { diffLines } from "./lib/lineDiff";
 import { isPushSupported, getPushState, enablePush, disablePush } from "./lib/push";
 import { periodRange, prevPeriodRange, granularityFor, periodBalance, trendDir, financeSeries, expenseByCategory, receivables, myTasks, ownerReceived, mySharesTotals, myProjectIncomeForMonth, selectionTotals, projectIncomeTxs, viewerShareOnProject, portfolioMineTotal } from "./lib/dashboardMetrics";
-import { dueState, dueSuffix, DUE_COLORS, PRIORITY_ORDER, tasksAttention } from "./lib/taskUi.js";
+import { compareTaskDue, dueState, dueSuffix, DUE_COLORS, isActiveTask, matchesTaskQueue, PRIORITY_ORDER, taskCalendarDate, taskNextStep, tasksAttention } from "./lib/taskUi.js";
 import { projectRemaining, paymentsByProject as groupPaymentsByProject, clientTotals, attentionTasks } from "./lib/clientMetrics.js";
 import { validateNewUser } from "./lib/userCreateValidation.js";
 import { parseYandexRows, classifyOperation, categorize, dedupe, normalizeMerchant, hashOperation } from "./lib/bankParsers.js";
 import { PANEL_IDS, deserializeAppearance, filterAppearancePanelsForRole, resetAppearance, serializeAppearance, shouldUseLegacyCardTilt, withoutPanelOverride } from "./lib/appearance.js";
+import TaskQueueFilters from "./components/TaskQueueFilters";
 import NotificationBell from "./components/NotificationBell";
 import MagneticButton from "./components/MagneticButton";
 import CommandPalette from "./components/CommandPalette";
@@ -4397,46 +4398,80 @@ async function extractYandexPdfRows(file) {
 
 function ProjectTasksSection({ projectId, projectName, client, profile, showToast }) {
   const [tasks, setTasks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
   const [title, setTitle] = useState("");
   const [editing, setEditing] = useState(null);
-
-  const reload = async () => {
-    try { setTasks(await fetchTasks(client, { projectId })); }
-    catch (e) { showToast("Ошибка задач: " + (e.message || ""), "error"); }
-  };
-  useEffect(() => { if (projectId) reload(); /* eslint-disable-next-line */ }, [projectId]);
-
+  const [filter, setFilter] = useState("all");
   const [adding, setAdding] = useState(false);
-  const quickAdd = async () => {
+  const today = taskCalendarDate();
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    setFailed(false);
+    try { setTasks(await fetchTasks(client, { projectId })); }
+    catch { setFailed(true); }
+    finally { setLoading(false); }
+  }, [client, projectId]);
+  useEffect(() => { void reload(); }, [reload]);
+
+  const quickAdd = async event => {
+    event.preventDefault();
     if (!title.trim() || adding) return;
     setAdding(true);
     try {
       const id = await createTask(client, { projectId, title, status: "Новая", priority: "Обычный" }, profile.id);
+      setFilter("all");
+      setTitle("");
+      await reload();
       await notifyTask(client, "task_created", id, profile.id);
-      setTitle(""); reload();
     } catch (e) { showToast("Ошибка: " + (e.message || ""), "error"); }
     finally { setAdding(false); }
   };
 
+  const shown = tasks.filter(task => matchesTaskQueue(task, filter, today, profile.id))
+    .sort((a, b) => Number(isActiveTask(b)) - Number(isActiveTask(a)) || compareTaskDue(a, b));
+
   return (
-    <div className="mt-4">
-      <div className="text-sm uppercase opacity-70 mb-2">Задачи проекта</div>
-      {tasks.map(t => (
-        <div key={t.id} onClick={() => setEditing(t)} className="flex justify-between items-center bg-zinc-800/60 rounded px-2 py-1 mb-1 cursor-pointer">
-          <span>{t.title}</span>
-          <span className="text-xs opacity-60">{t.status}{t.assigneeName ? ` · ${t.assigneeName}` : ""}</span>
-        </div>
-      ))}
-      <div className="flex gap-2 mt-2">
-        <input className="flex-1 bg-zinc-800 rounded px-2 py-1" placeholder="+ задача (Enter)"
-               value={title} onChange={e => setTitle(e.target.value)}
-               onKeyDown={e => { if (e.key === "Enter") quickAdd(); }} />
-        <button type="button" className={BTN.ghost} disabled={!title.trim() || adding} onClick={quickAdd}>Добавить задачу</button>
+    <section className="project-task-queue" aria-label="Задачи проекта">
+      <div className="project-task-toolbar">
+        <h3>Задачи проекта</h3>
+        <button type="button" className={BTN.primary}
+          onClick={() => setEditing({ projectId, projectName })}>Поставить задачу</button>
       </div>
+      {loading ? <p role="status">Загружаем задачи…</p> : failed ? (
+        <div role="alert">Задачи не загрузились. <button type="button" className={BTN.ghost} onClick={reload}>Повторить</button></div>
+      ) : <>
+        <TaskQueueFilters tasks={tasks} value={filter} onChange={setFilter} today={today} viewerId={profile.id} />
+        {shown.length > 0 && <div className="project-task-grid project-task-heading" aria-hidden="true">
+          <span>Задача</span><span>Срок</span><span>Следующий шаг</span>
+        </div>}
+        {shown.map(task => {
+          const due = dueState(task.dueDate, today);
+          const step = taskNextStep(task);
+          return <button type="button" key={task.id} className="project-task-grid project-task-row" onClick={() => setEditing(task)}>
+            <span><strong>{task.title}</strong><span className="project-task-detail">{task.status}
+              {isActiveTask(task) && task.hasOpenQuestion && <span className="project-task-open-question"> · Есть вопрос</span>}
+            </span></span>
+            <span style={isActiveTask(task) && task.dueDate ? { color: DUE_COLORS[due.level] } : undefined}>
+              {task.dueDate ? fmtDM(task.dueDate) : "Без срока"}
+              {isActiveTask(task) && due.days !== null && <span className="project-task-detail">
+                {due.days < 0 ? `Просрочено на ${-due.days} дн.` : dueSuffix(due.days)}
+              </span>}
+            </span>
+            <span>{step ? <>{step.ownerName}<span className="project-task-detail">{step.label}</span></> : "—"}</span>
+          </button>;
+        })}
+        {!shown.length && <p className="project-task-detail">{tasks.length ? "Нет задач по этому отбору." : "В проекте пока нет задач."}</p>}
+      </>}
+      <form className="project-task-quick" onSubmit={quickAdd}>
+        <StyledInput aria-label="Название быстрой задачи" placeholder="+ задача (Enter)" value={title} onChange={e => setTitle(e.target.value)} />
+        <button type="submit" className={BTN.ghost} disabled={!title.trim() || adding}>Добавить задачу</button>
+      </form>
       {editing && <TaskModal task={editing} client={client} profile={profile} projects={[{ id: projectId, name: projectName }]}
-                             onClose={() => setEditing(null)} onSaved={() => { setEditing(null); reload(); }}
-                             showToast={showToast} />}
-    </div>
+        fixedProject onClose={() => setEditing(null)} onSaved={() => { if (!editing.id) setFilter("all"); setEditing(null); void reload(); }}
+        showToast={showToast} />}
+    </section>
   );
 }
 
@@ -4674,8 +4709,9 @@ function TaskWorkflowButton({ task, client, profile, showToast, onChanged }) {
   return <div style={{ display: "flex", gap: 8, marginTop: 12 }}>{buttons}</div>;
 }
 
-function TaskModal({ task, client, profile, projects, realtimeTick, onClose, onSaved, showToast }) {
+function TaskModal({ task, client, profile, projects, fixedProject = false, realtimeTick, onClose, onSaved, showToast }) {
   const isNew = !task.id;
+  const nextStep = isNew ? null : taskNextStep(task);
   const [form, setForm] = useState({
     projectId: task.projectId || "", assignedTo: task.assignedTo || "",
     title: task.title || "", description: task.description || "",
@@ -4857,9 +4893,10 @@ function TaskModal({ task, client, profile, projects, realtimeTick, onClose, onS
     catch (e) { showToast("Ошибка удаления: " + (e.message || ""), "error"); }
   };
 
-  return (
-    <div style={{ position:"fixed", inset:0, zIndex:100, display:"flex", alignItems:"center", justifyContent:"center", padding:16, background:"rgba(2,8,23,0.92)", backdropFilter:"blur(6px)" }} onClick={onClose}>
-      <div style={{ background:"#141414", border:"1px solid rgba(255,255,255,0.06)", borderRadius:20, padding:24, width:"min(620px,92vw)", maxHeight:"90vh", overflowY:"auto", boxShadow:"0 25px 60px rgba(0,0,0,.6)" }} onClick={e => e.stopPropagation()}>
+  return createPortal(
+    <div style={{ position:"fixed", inset:0, zIndex:120, display:"flex", alignItems:"center", justifyContent:"center", padding:16, background:"rgba(2,8,23,0.92)", backdropFilter:"blur(6px)" }} onClick={onClose}>
+      <div role="dialog" aria-modal="true" aria-label={isNew ? "Новая задача" : "Карточка задачи"}
+        style={{ background:"#141414", border:"1px solid rgba(255,255,255,0.06)", borderRadius:20, padding:24, width:"min(620px,92vw)", maxHeight:"90vh", overflowY:"auto", boxShadow:"0 25px 60px rgba(0,0,0,.6)" }} onClick={e => e.stopPropagation()}>
         <div style={{ marginBottom: 14 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <h3 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>{isNew ? "Новая задача" : form.title || "Задача"}</h3>
@@ -4870,13 +4907,16 @@ function TaskModal({ task, client, profile, projects, realtimeTick, onClose, onS
               <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 20, background: pm.bg, color: pm.color }}>{pm.label}</span>
             ); })()}
           </div>
-          {!isNew && (() => { const due = dueState(task.dueDate, todayStr()); return (
+          {!isNew && (() => { const due = dueState(task.dueDate, taskCalendarDate()); return (
             <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--text-secondary)" }}>
               {task.projectName ? `📁 ${task.projectName}` : "👤 Личная задача"} · исполнитель: {task.assigneeName || "—"} · автор: {task.authorName || "—"} · поставлена {fmtD((task.createdAt || "").slice(0, 10))}
-              {task.dueDate && <> · срок <span style={{ color: DUE_COLORS[due.level], fontWeight: 600 }}>{fmtD(task.dueDate)} ({dueSuffix(due.days)})</span></>}
+              {task.dueDate && <> · срок <span style={isActiveTask(task) ? { color: DUE_COLORS[due.level], fontWeight: 600 } : undefined}>
+                {fmtD(task.dueDate)}{isActiveTask(task) && due.days !== null && ` (${dueSuffix(due.days)})`}
+              </span></>}
             </p>
           ); })()}
         </div>
+        {nextStep && <p className="task-next-step"><strong>{nextStep.label}</strong> · {nextStep.ownerName}</p>}
         {!isNew && <TaskWorkflowButton task={task} client={client} profile={profile}
                      showToast={showToast} onChanged={onSaved} />}
         {!isNew && <TaskPhotosSection task={task} client={client} profile={profile} showToast={showToast} />}
@@ -4964,8 +5004,8 @@ function TaskModal({ task, client, profile, projects, realtimeTick, onClose, onS
           </div>
         )}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
-          <StyledSelect value={form.projectId} onChange={e => set("projectId", e.target.value)}>
-            <option value="">Без проекта (личная)</option>
+          <StyledSelect aria-label="Проект задачи" disabled={fixedProject} value={form.projectId} onChange={e => set("projectId", e.target.value)}>
+            {!fixedProject && <option value="">Без проекта (личная)</option>}
             {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           </StyledSelect>
           {form.assignedTo ? (
@@ -4996,7 +5036,7 @@ function TaskModal({ task, client, profile, projects, realtimeTick, onClose, onS
           <StyledSelect value={form.priority} onChange={e => set("priority", e.target.value)}>
             {TASK_PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
           </StyledSelect>
-          <StyledInput type="date" value={form.dueDate || ""} onChange={e => set("dueDate", e.target.value)} />
+          <StyledInput type="date" aria-label="Срок задачи" value={form.dueDate || ""} onChange={e => set("dueDate", e.target.value)} />
         </div>
 
         {!isNew && (
@@ -5071,13 +5111,13 @@ function TaskModal({ task, client, profile, projects, realtimeTick, onClose, onS
           </div>
         </div>
       </div>
-    </div>
+    </div>, document.body
   );
 }
 
 // Строка списка задач — те же данные, что на карточке доски, в одну плотную строку.
 function TaskRowList({ t, onOpen, idx = 0, appearance }) {
-  const today = todayStr();
+  const today = taskCalendarDate();
   const due = dueState(t.dueDate, today);
   const sm = TASK_STATUS_META[t.status] || { color: "var(--text-tertiary)" };
   const pm = TASK_PRIORITY_META[t.priority] || TASK_PRIORITY_META["Обычный"];
@@ -5107,7 +5147,7 @@ function TaskRowList({ t, onOpen, idx = 0, appearance }) {
 
 // Карточка задачи на доске — стиль B (мокап 2026-06-11). UserAvatar — общий компонент сайта.
 function TaskCardBoard({ t, onOpen, draggable, onDragStart, photos = [], client, idx = 0, appearance }) {
-  const today = todayStr();
+  const today = taskCalendarDate();
   const due = dueState(t.dueDate, today);
   const pm = TASK_PRIORITY_META[t.priority] || TASK_PRIORITY_META["Обычный"];
   const done = t.status === "Готово";
@@ -5169,7 +5209,7 @@ function TaskCardBoard({ t, onOpen, draggable, onDragStart, photos = [], client,
   );
 }
 
-function TasksBoard({ tasks, onOpen, onReload, client, profile, photosByTask = {}, showToast, appearance }) {
+function TasksBoard({ tasks, projectId, onOpen, onReload, client, profile, photosByTask = {}, showToast, appearance }) {
   // колонки доски — без «Отменена» (намеренно; отменённые видны фильтром в списке)
   const cols = ["Новая", "В работе", "На проверке", "Готово"];
   const [dragId, setDragId] = useState(null);
@@ -5212,7 +5252,7 @@ function TasksBoard({ tasks, onOpen, onReload, client, profile, photosByTask = {
                   appearance={appearance}
                   draggable onDragStart={() => setDragId(t.id)} />
               ))}
-              <button onClick={() => onOpen({ status: col, priority: "Обычный" })} style={{
+              <button onClick={() => onOpen({ projectId, status: col, priority: "Обычный" })} style={{
                 width: "100%", textAlign: "center", background: "transparent",
                 border: "1px dashed rgba(255,255,255,0.10)", color: "var(--text-tertiary)",
                 borderRadius: 9, padding: 9, fontSize: 12, cursor: "pointer",
@@ -5230,6 +5270,7 @@ function TasksView({ client, profile, projects, showToast, appearance, customize
   const [photosByTask, setPhotosByTask] = useState({});
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState("board"); // доска — главный вид (решение владельца)
+  const [queue, setQueue] = useState("all");
   const [fProject, setFProject] = useState("");
   const [fStatus, setFStatus] = useState("");
   const [onlyMine, setOnlyMine] = useState(false);
@@ -5241,20 +5282,33 @@ function TasksView({ client, profile, projects, showToast, appearance, customize
   const editingRef = useRef(null);
   useEffect(() => { editingRef.current = editing; }, [editing]);
 
+  const latestLoad = useRef(0);
   const reload = useCallback(async () => {
+    const request = ++latestLoad.current;
     setLoading(true);
+    setPhotosByTask({});
     try {
       const list = await fetchTasks(client, {
         projectId: fProject || null, status: view === "list" ? (fStatus || null) : null,
         assignedTo: onlyMine ? profile.id : null,
       });
+      if (request !== latestLoad.current) return;
       setTasks(list);
-      try { setPhotosByTask(await fetchTaskPhotosBatch(client, list.map(t => t.id))); }
-      catch { setPhotosByTask({}); } // миниатюры — некритичное украшение
-    } catch (e) { showToast("Ошибка загрузки задач: " + (e.message || ""), "error"); }
-    finally { setLoading(false); }
-  }, [fProject, fStatus, onlyMine, client, profile, showToast, view]);
-  useEffect(() => { reload(); }, [reload]);
+      if (view === "board") {
+        fetchTaskPhotosBatch(client, list.map(task => task.id)).then(photos => {
+          if (request === latestLoad.current) setPhotosByTask(photos);
+        }).catch(() => {}); // карточки доступны и без миниатюр
+      }
+    } catch (e) {
+      if (request === latestLoad.current) showToast("Ошибка загрузки задач: " + (e.message || ""), "error");
+    } finally {
+      if (request === latestLoad.current) setLoading(false);
+    }
+  }, [fProject, fStatus, onlyMine, client, profile.id, showToast, view]);
+  useEffect(() => {
+    void reload();
+    return () => { latestLoad.current += 1; };
+  }, [reload]);
 
   // ── 6.4b: Realtime-подписка на project_tasks ──
   // tick инкрементируется при realtime-событии по id открытой задачи -> модалка
@@ -5305,23 +5359,21 @@ function TasksView({ client, profile, projects, showToast, appearance, customize
     return () => { client.removeChannel(channel); };
   }, [client, canSeeRow]);
 
-  const today = todayStr();
-  const shown = tasks.filter(t => !fPriority || t.priority === fPriority);
-  const activeCount = shown.filter(t => t.status !== "Готово" && t.status !== "Отменена").length;
-  const attentionCount = tasksAttention(shown, today);
+  const today = taskCalendarDate();
+  const eligible = tasks.filter(task =>
+    (!fProject || task.projectId === fProject) && (!onlyMine || task.assignedTo === profile.id)
+    && (view !== "list" || (fStatus ? task.status === fStatus : task.status !== "Отменена"))
+    && (!fPriority || task.priority === fPriority));
+  const shown = eligible.filter(task => matchesTaskQueue(task, queue, today, profile.id));
+  const activeCount = eligible.filter(isActiveTask).length;
+  const attentionCount = tasksAttention(eligible, today);
+  const extraFilterCount = [fProject, view === "list" && fStatus, fPriority, onlyMine].filter(Boolean).length;
 
   const listShown = (() => {
-    let arr = shown;
-    if (view === "list" && !fStatus) arr = arr.filter(t => t.status !== "Отменена");
-    return arr.slice().sort((a, b) => {
+    return shown.slice().sort((a, b) => {
       if (sortBy === "priority") return (PRIORITY_ORDER[a.priority] ?? 9) - (PRIORITY_ORDER[b.priority] ?? 9);
       if (sortBy === "created") return (b.createdAt || "").localeCompare(a.createdAt || "");
-      // 'due': просроченные сверху, потом ближайшие; без срока — вниз
-      const da = dueState(a.dueDate, today).days, db = dueState(b.dueDate, today).days;
-      if (da === null && db === null) return 0;
-      if (da === null) return 1;
-      if (db === null) return -1;
-      return da - db;
+      return compareTaskDue(a, b);
     });
   })();
   return (
@@ -5345,34 +5397,39 @@ function TasksView({ client, profile, projects, showToast, appearance, customize
           <MagneticButton onClick={() => setEditing({ projectId: fProject || "", status: "Новая", priority: "Обычный" })} className={BTN.primary}>+ Новая задача</MagneticButton>
         </div>
       </div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16, alignItems: "center" }}>
-        <StyledSelect value={fProject} onChange={e => setFProject(e.target.value)} style={{ width: "auto", padding: "6px 10px", fontSize: 13 }}>
-          <option value="">Все проекты</option>
-          {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </StyledSelect>
-        {view === "list" && (
-          <StyledSelect value={fStatus} onChange={e => setFStatus(e.target.value)} style={{ width: "auto", padding: "6px 10px", fontSize: 13 }}>
-            <option value="">Все статусы</option>
-            {TASK_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+      <TaskQueueFilters tasks={loading ? [] : eligible} value={queue} onChange={setQueue} today={today} viewerId={profile.id} />
+      <details className="task-more-filters">
+        <summary>Фильтры{extraFilterCount > 0 && ` · ${extraFilterCount}`}</summary>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+          <StyledSelect aria-label="Отбор по проекту" value={fProject} onChange={e => setFProject(e.target.value)} style={{ width: "auto", padding: "6px 10px", fontSize: 13 }}>
+            <option value="">Все проекты</option>
+            {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           </StyledSelect>
-        )}
-        <StyledSelect value={fPriority} onChange={e => setFPriority(e.target.value)} style={{ width: "auto", padding: "6px 10px", fontSize: 13 }}>
-          <option value="">Любой приоритет</option>
-          {TASK_PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
-        </StyledSelect>
-        {view === "list" && (
-          <StyledSelect value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ width: "auto", padding: "6px 10px", fontSize: 13 }}>
-            <option value="due">Сортировка: по сроку</option>
-            <option value="priority">Сортировка: по приоритету</option>
-            <option value="created">Сортировка: по дате постановки</option>
+          {view === "list" && (
+            <StyledSelect value={fStatus} onChange={e => setFStatus(e.target.value)} style={{ width: "auto", padding: "6px 10px", fontSize: 13 }}>
+              <option value="">Все статусы</option>
+              {TASK_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+            </StyledSelect>
+          )}
+          <StyledSelect value={fPriority} onChange={e => setFPriority(e.target.value)} style={{ width: "auto", padding: "6px 10px", fontSize: 13 }}>
+            <option value="">Любой приоритет</option>
+            {TASK_PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
           </StyledSelect>
-        )}
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-secondary)" }}>
-          <input type="checkbox" checked={onlyMine} onChange={e => setOnlyMine(e.target.checked)} style={{ accentColor: "#d4af37" }} /> только мои
-        </label>
-      </div>
+          {view === "list" && (
+            <StyledSelect value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ width: "auto", padding: "6px 10px", fontSize: 13 }}>
+              <option value="due">Сортировка: по сроку</option>
+              <option value="priority">Сортировка: по приоритету</option>
+              <option value="created">Сортировка: по дате постановки</option>
+            </StyledSelect>
+          )}
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-secondary)" }}>
+            <input type="checkbox" checked={onlyMine} onChange={e => setOnlyMine(e.target.checked)} style={{ accentColor: "#d4af37" }} /> Я исполнитель
+          </label>
+        </div>
+      </details>
       {loading ? <div className="opacity-60">Загрузка…</div> :
-       view === "board" ? <TasksBoard tasks={shown} onOpen={setEditing} onReload={reload} client={client} profile={profile} photosByTask={photosByTask} showToast={showToast} appearance={appearance} /> :
+       !shown.length && queue !== "all" ? <Empty text="Нет задач по этому отбору" /> :
+       view === "board" ? <TasksBoard tasks={shown} projectId={fProject} onOpen={setEditing} onReload={reload} client={client} profile={profile} photosByTask={photosByTask} showToast={showToast} appearance={appearance} /> :
        <div>
          {listShown.map((t, i) => <TaskRowList key={t.id} t={t} onOpen={setEditing} idx={i} appearance={appearance} />)}
          {!listShown.length && <div style={{ color: "var(--text-tertiary)", padding: "24px 0", textAlign: "center" }}>Задач нет</div>}

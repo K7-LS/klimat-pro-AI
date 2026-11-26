@@ -32,10 +32,49 @@ export function dueSuffix(days) {
   return `через ${days} дн`;
 }
 
-// Сводка шапки: активные задачи, просроченные ИЛИ с открытым вопросом.
+export const TASK_QUEUE_FILTERS = [
+  { id: "all", label: "Все" },
+  { id: "attention", label: "Требуют внимания" },
+  { id: "today", label: "На сегодня" },
+  { id: "myAction", label: "Мой следующий шаг" },
+];
+
+export function taskCalendarDate(date = new Date()) {
+  return [date.getFullYear(), date.getMonth() + 1, date.getDate()]
+    .map(part => String(part).padStart(2, "0")).join("-");
+}
+
+export function isActiveTask(task) {
+  return task.status !== "Готово" && task.status !== "Отменена";
+}
+
+export function taskNextStep(task) {
+  if (task.status === "На проверке") {
+    return { ownerId: task.authorId, ownerName: task.authorName || "Автор", label: "Принять результат" };
+  }
+  if (task.status !== "Новая" && task.status !== "В работе") return null;
+  if (!task.assignedTo) {
+    return { ownerId: task.authorId, ownerName: task.authorName || "Автор", label: "Назначить исполнителя" };
+  }
+  return { ownerId: task.assignedTo, ownerName: task.assigneeName || "Исполнитель",
+    label: task.status === "Новая" ? "Взять в работу" : "Подготовить результат" };
+}
+
+export function matchesTaskQueue(task, filter, today, viewerId) {
+  if (filter === "all") return true;
+  if (!isActiveTask(task)) return false;
+  if (filter === "today") return task.dueDate === today;
+  if (filter === "myAction") return !!viewerId && taskNextStep(task)?.ownerId === viewerId;
+  return filter === "attention" && (dueState(task.dueDate, today).level === "overdue" || !!task.hasOpenQuestion);
+}
+
 export function tasksAttention(tasks, today) {
-  return tasks.filter(task =>
-    task.status !== "Готово" && task.status !== "Отменена" &&
-    (dueState(task.dueDate, today).level === "overdue" || !!task.hasOpenQuestion)
-  ).length;
+  return tasks.filter(task => matchesTaskQueue(task, "attention", today)).length;
+}
+
+export function compareTaskDue(a, b) {
+  if (a.dueDate === b.dueDate) return 0;
+  if (!a.dueDate) return 1;
+  if (!b.dueDate) return -1;
+  return a.dueDate.localeCompare(b.dueDate);
 }

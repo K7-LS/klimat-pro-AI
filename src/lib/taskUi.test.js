@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { dueState, dueSuffix, tasksAttention, PRIORITY_ORDER, DUE_COLORS } from "./taskUi.js";
+import { compareTaskDue, matchesTaskQueue, taskCalendarDate, taskNextStep, dueState, dueSuffix, tasksAttention, PRIORITY_ORDER, DUE_COLORS } from "./taskUi.js";
 
 const T = "2026-06-11"; // «сегодня» всегда передаётся снаружи — функции чистые
 
@@ -41,4 +41,36 @@ describe("tasksAttention", () => {
   it("пустой список = 0", () => expect(tasksAttention([], T)).toBe(0));
   it("soon (срок близко, не просрочен) — НЕ требует внимания", () =>
     expect(tasksAttention([mk({ dueDate: "2026-06-13" })], T)).toBe(0));
+});
+
+
+describe("быстрые отборы задач", () => {
+  const task = { status: "В работе", authorId: "author", assignedTo: "assignee", dueDate: T };
+
+  it("показывает исполнителя в работе и автора на проверке", () => {
+    expect(taskNextStep(task)?.ownerId).toBe("assignee");
+    expect(taskNextStep({ ...task, status: "На проверке" })).toMatchObject({
+      ownerId: "author", label: "Принять результат",
+    });
+    expect(matchesTaskQueue({ ...task, status: "На проверке" }, "myAction", T, "assignee")).toBe(false);
+    expect(matchesTaskQueue({ ...task, status: "На проверке" }, "myAction", T, "author")).toBe(true);
+  });
+
+  it("показывает постановщику неназначенную задачу", () => {
+    expect(taskNextStep({ ...task, assignedTo: null })).toMatchObject({
+      ownerId: "author", label: "Назначить исполнителя",
+    });
+  });
+
+  it("считает сегодняшние сроки только у активных задач по локальной дате", () => {
+    expect(taskCalendarDate(new Date(2026, 5, 11, 0, 5))).toBe(T);
+    expect(matchesTaskQueue(task, "today", T, "assignee")).toBe(true);
+    expect(matchesTaskQueue({ ...task, status: "Готово" }, "today", T, "assignee")).toBe(false);
+    expect(matchesTaskQueue({ ...task, status: "Отменена" }, "myAction", T, "assignee")).toBe(false);
+  });
+
+  it("ставит просрочки выше ближайших сроков, задачи без даты последними", () => {
+    const dueDates = [null, T, "2026-06-10"].map(dueDate => ({ dueDate })).sort(compareTaskDue).map(row => row.dueDate);
+    expect(dueDates).toEqual(["2026-06-10", T, null]);
+  });
 });
