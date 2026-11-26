@@ -10,16 +10,14 @@ import { compareTaskDue, dueState, dueSuffix, DUE_COLORS, isActiveTask, matchesT
 import { projectRemaining, paymentsByProject as groupPaymentsByProject, clientTotals, attentionTasks } from "./lib/clientMetrics.js";
 import { validateNewUser } from "./lib/userCreateValidation.js";
 import { parseYandexRows, classifyOperation, categorize, dedupe, normalizeMerchant, hashOperation } from "./lib/bankParsers.js";
-import { PANEL_IDS, deserializeAppearance, filterAppearancePanelsForRole, resetAppearance, serializeAppearance, shouldUseLegacyCardTilt, withoutPanelOverride } from "./lib/appearance.js";
+import { PANEL_IDS, deserializeAppearance, filterAppearancePanelsForRole, resetAppearance, serializeAppearance, withoutPanelOverride } from "./lib/appearance.js";
 import { formHasChanges, ModalDraftContext, useBackdropDismiss, useGuardedClose, useModalDraft } from "./components/UnsavedChanges";
 import TaskQueueFilters from "./components/TaskQueueFilters";
 import NotificationBell from "./components/NotificationBell";
-import MagneticButton from "./components/MagneticButton";
 import CommandPalette from "./components/CommandPalette";
 import HelpModal from "./components/HelpModal";
 import TourModal from "./components/TourModal";
 import { helpSectionsFor, shouldAutoStartTour } from "./lib/helpContent";
-import BackgroundCanvas from "./components/BackgroundCanvas";
 import AppearanceMode from "./components/AppearanceMode";
 import AppearancePanel from "./components/AppearancePanel";
 import McpAccessControl from "./components/McpAccessControl";
@@ -877,7 +875,7 @@ function ActivityFeed({ items, appearance, panelId }) {
         else if (d.name) detail = d.name;
         else if (d.title) detail = d.title;
         const row = (
-          <div key={a.id} onMouseMove={spotlightMove} className="kp-card" style={{
+          <div key={a.id} className="kp-card" style={{
             display: "flex", alignItems: "center", gap: 12, padding: "8px 14px",
           }}>
             <span style={{
@@ -1443,32 +1441,6 @@ function Field({ label, children, style = {} }) {
   return <div style={{ marginBottom: 14, ...style }}><Label>{label}</Label>{children}</div>;
 }
 
-// Базовая карточка — фон чуть светлее основного, тонкая граница, скруглённые углы
-// Spotlight: курсор → CSS-переменные --mx/--my для золотистого свечения (.kp-spotlight в index.css).
-function spotlightMove(e) {
-  const el = e.currentTarget;
-  const r = el.getBoundingClientRect();
-  el.style.setProperty("--mx", `${e.clientX - r.left}px`);
-  el.style.setProperty("--my", `${e.clientY - r.top}px`);
-}
-
-// 3D-tilt + spotlight для крупных карточек (Card/KpiCard). Уважает reduced-motion.
-function tiltMove(e) {
-  const el = e.currentTarget;
-  const r = el.getBoundingClientRect();
-  const px = (e.clientX - r.left) / r.width;
-  const py = (e.clientY - r.top) / r.height;
-  el.style.setProperty("--mx", `${e.clientX - r.left}px`);
-  el.style.setProperty("--my", `${e.clientY - r.top}px`);
-  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  const ry = (px - 0.5) * 7;
-  const rx = -(py - 0.5) * 7;
-  el.style.transform = `perspective(1100px) rotateX(${rx.toFixed(2)}deg) rotateY(${ry.toFixed(2)}deg) translateY(-2px)`;
-}
-function tiltLeave(e) {
-  e.currentTarget.style.transform = "";
-}
-
 // Перезагрузка на актуальную версию: сначала забираем свежий service worker и ждём,
 // пока он возьмёт управление, и только потом reload — иначе старый SW отдаёт
 // закэшированный бандл и «обновление не срабатывает с первого раза».
@@ -1490,39 +1462,37 @@ async function reloadToLatest() {
   window.location.reload();
 }
 
-// Живой логотип: значок плавно сменяется по кругу (A·B·C·F·L) или показывает один
-// выбранный (настройка устройства localStorage('kp-logo'); меняется в Профиле).
+// Логотип показывает один значок (A·B·C·F·L) или сменяет их по кругу.
 // Обводка — золотой градиент url(#kpg). По умолчанию — ротация.
 const LOGO_ORDER = ["A", "B", "C", "F", "L"];
 function LogoMark() {
   const ICONS = {
     A: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="url(#kpg)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-        <g className="kpl-flow"><path d="M3 12a4 4 0 0 1 4-4h9a3 3 0 1 0-3-3" /><path d="M3 17h13a3 3 0 1 1-3 3" /><path d="M3 7h4" /></g>
+        <g><path d="M3 12a4 4 0 0 1 4-4h9a3 3 0 1 0-3-3" /><path d="M3 17h13a3 3 0 1 1-3 3" /><path d="M3 7h4" /></g>
       </svg>
     ),
     B: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="url(#kpg)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-        <g className="kpl-spin"><path d="M10.827 16.379a6.082 6.082 0 0 1-8.618-7.002l5.412 1.45a6.082 6.082 0 0 1 7.002-8.618l-1.45 5.412a6.082 6.082 0 0 1 8.618 7.002l-5.412-1.45a6.082 6.082 0 0 1-7.002 8.618z" /></g>
+        <g><path d="M10.827 16.379a6.082 6.082 0 0 1-8.618-7.002l5.412 1.45a6.082 6.082 0 0 1 7.002-8.618l-1.45 5.412a6.082 6.082 0 0 1 8.618 7.002l-5.412-1.45a6.082 6.082 0 0 1-7.002 8.618z" /></g>
         <circle cx="12" cy="12" r="1.4" fill="url(#kpg)" stroke="none" />
       </svg>
     ),
     C: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="url(#kpg)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-        <g className="kpl-cold"><path d="M12 2v20M2 12h20M4.9 4.9l14.2 14.2M19.1 4.9L4.9 19.1" /></g>
-        <g className="kpl-warm"><circle cx="12" cy="12" r="3.6" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></g>
+        <g><path d="M12 2v20M2 12h20M4.9 4.9l14.2 14.2M19.1 4.9L4.9 19.1" /></g>
       </svg>
     ),
     F: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="url(#kpg)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
         <path d="M4 11l8-6 8 6v8a1 1 0 0 1-1 1h-4v-5h-6v5H5a1 1 0 0 1-1-1z" />
-        <path className="kpl-flow" d="M7 12h6a1.6 1.6 0 1 0-1.6-1.6" />
+        <path d="M7 12h6a1.6 1.6 0 1 0-1.6-1.6" />
       </svg>
     ),
     L: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="url(#kpg)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
         <path d="M4 11l8-6 8 6v8a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z" />
-        <path className="kpl-beat" d="M12 17.6s-3-2-3-4.1A1.6 1.6 0 0 1 12 12.1 1.6 1.6 0 0 1 15 13.5c0 2.1-3 4.1-3 4.1z" fill="url(#kpg)" stroke="none" />
+        <path d="M12 17.6s-3-2-3-4.1A1.6 1.6 0 0 1 12 12.1 1.6 1.6 0 0 1 15 13.5c0 2.1-3 4.1-3 4.1z" fill="url(#kpg)" stroke="none" />
       </svg>
     ),
   };
@@ -1542,27 +1512,23 @@ function LogoMark() {
     return () => clearInterval(t);
   }, [single]);
   return (
-    <div style={{ position: "relative", width: 22, height: 22 }}>
+    <div style={{ position: "relative", width: 22, height: 22, display: "grid", placeItems: "center" }}>
       <svg width="0" height="0" style={{ position: "absolute" }} aria-hidden="true"><defs>
         <linearGradient id="kpg" x1="0" y1="0" x2="24" y2="24">
           <stop offset="0" stopColor="#f6e7a8" /><stop offset="0.6" stopColor="#d4af37" /><stop offset="1" stopColor="#9c7c22" />
         </linearGradient>
       </defs></svg>
-      {LOGO_ORDER.map((id, i) => (
-        <div key={id} style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", opacity: i === idx ? 1 : 0, transition: "opacity 1.4s ease-in-out" }}>{ICONS[id]}</div>
-      ))}
+      {ICONS[LOGO_ORDER[idx]]}
     </div>
   );
 }
 
 function Card({ children, style = {}, glass = false, className = "", ...surfaceProps }) {
-  const useLegacyTilt = shouldUseLegacyCardTilt(className);
   if (glass) {
     return (
       <div
         {...surfaceProps}
-        onMouseMove={useLegacyTilt ? tiltMove : undefined} onMouseLeave={useLegacyTilt ? tiltLeave : undefined}
-        className={`glass-card kp-spotlight kp-hover-glow gold-ingot ${className}`.trim()}
+        className={`glass-card gold-card ${className}`.trim()}
         style={{ borderRadius: 14, padding: 18, ...style }}
       >
         {children}
@@ -1570,7 +1536,7 @@ function Card({ children, style = {}, glass = false, className = "", ...surfaceP
     );
   }
   return (
-    <div {...surfaceProps} onMouseMove={useLegacyTilt ? tiltMove : undefined} onMouseLeave={useLegacyTilt ? tiltLeave : undefined} className={`kp-spotlight kp-hover-glow gold-ingot ${className}`.trim()} style={{
+    <div {...surfaceProps} className={`gold-card ${className}`.trim()} style={{
       background: "#141414",
       border: "1px solid rgba(255,255,255,0.06)",
       borderRadius: 14,
@@ -1761,10 +1727,9 @@ function KpiCard({ label, value, sub, color = "#d4af37", Icon, format, trend, cl
   // используем её. Если значение строка (например, "65%") — оставляем как есть.
   // Иначе округляем число до целого.
   const isString = typeof value === "string";
-  const useLegacyTilt = shouldUseLegacyCardTilt(className);
 
   return (
-    <div {...surfaceProps} onMouseMove={useLegacyTilt ? tiltMove : undefined} onMouseLeave={useLegacyTilt ? tiltLeave : undefined} className={`glass-card kp-spotlight kp-hover-glow gold-ingot ${className}`.trim()} style={{ borderRadius: 14, padding: 16, position: "relative", overflow: "hidden" }}>
+    <div {...surfaceProps} className={`glass-card gold-card ${className}`.trim()} style={{ borderRadius: 14, padding: 16, position: "relative", overflow: "hidden" }}>
       {/* Тонкое цветное свечение в углу — акцент в цвет показателя */}
       <div
         aria-hidden
@@ -3835,13 +3800,13 @@ function Projects({ projects, setProjects, clients, client, profile, ownerId, sh
             fontSize: 12, fontWeight: 600, cursor: "pointer", transition: "all .15s", whiteSpace: "nowrap",
           }}
         >{selectMode ? "Отмена" : "Выбрать"}</button>
-        <MagneticButton onClick={()=>setModal("add")} className={BTN.primary}>+ Новый объект</MagneticButton>
+        <button type="button" onClick={()=>setModal("add")} className={BTN.primary}>+ Новый объект</button>
       </div>
 
       <div style={{display:"flex",flexDirection:"column",gap:12}}>
         {visibleSorted.length===0
           ? <Empty text={stageFilter==="Все"?"Нет проектов — нажми «Новый объект»":`Нет проектов со стадией «${stageFilter}»`}/>
-          : visibleSorted.map((p,i)=>{
+          : visibleSorted.map(p=>{
             const meta = STAGE_META[p.stage]||{color:"#d4af37",progress:0};
             const isAwaitingPayment = p.stage==="Сдан заказчику";
             const isOverdue = p.deadline&&p.deadline<todayS&&!["Оплачен","Архив","Сдан заказчику"].includes(p.stage);
@@ -3851,7 +3816,7 @@ function Projects({ projects, setProjects, clients, client, profile, ownerId, sh
             const canManage = p.ownerId===profile?.id || profile?.role==="admin";
             return (
               <AppearancePanel key={p.id} panelId={PANEL_IDS.projectsList} appearance={appearance}>
-              <div onMouseMove={spotlightMove} className="kp-card kp-rise" style={{padding:16,animationDelay:`${i*40}ms`}}>
+              <div className="kp-card" style={{padding:16}}>
                 <div style={{display:"flex",alignItems:"flex-start",gap:12}}>
                   {selectMode && (
                     <div style={{paddingTop:2,flexShrink:0}} onClick={e => e.stopPropagation()}>
@@ -5151,17 +5116,16 @@ function TaskModal({ task, client, profile, projects, fixedProject = false, real
 }
 
 // Строка списка задач — те же данные, что на карточке доски, в одну плотную строку.
-function TaskRowList({ t, onOpen, idx = 0, appearance }) {
+function TaskRowList({ t, onOpen, appearance }) {
   const today = taskCalendarDate();
   const due = dueState(t.dueDate, today);
   const sm = TASK_STATUS_META[t.status] || { color: "var(--text-tertiary)" };
   const pm = TASK_PRIORITY_META[t.priority] || TASK_PRIORITY_META["Обычный"];
   return (
     <AppearancePanel panelId={PANEL_IDS.tasksList} appearance={appearance}>
-    <div onClick={() => onOpen(t)} onMouseMove={spotlightMove} className="kp-card kp-rise" style={{
+    <div onClick={() => onOpen(t)} className="kp-card" style={{
       display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
       padding: "10px 14px", marginBottom: 8, cursor: "pointer",
-      animationDelay: `${idx * 40}ms`,
     }}>
       <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 20, background: sm.color + "1f", color: sm.color, whiteSpace: "nowrap" }}>{t.status}</span>
       <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 20, background: pm.bg, color: pm.color, whiteSpace: "nowrap" }}>{pm.label}</span>
@@ -5181,7 +5145,7 @@ function TaskRowList({ t, onOpen, idx = 0, appearance }) {
 }
 
 // Карточка задачи на доске — стиль B (мокап 2026-06-11). UserAvatar — общий компонент сайта.
-function TaskCardBoard({ t, onOpen, draggable, onDragStart, photos = [], client, idx = 0, appearance }) {
+function TaskCardBoard({ t, onOpen, draggable, onDragStart, photos = [], client, appearance }) {
   const today = taskCalendarDate();
   const due = dueState(t.dueDate, today);
   const pm = TASK_PRIORITY_META[t.priority] || TASK_PRIORITY_META["Обычный"];
@@ -5189,10 +5153,9 @@ function TaskCardBoard({ t, onOpen, draggable, onDragStart, photos = [], client,
   return (
     <AppearancePanel panelId={PANEL_IDS.tasksBoard} appearance={appearance}>
     <div draggable={draggable} onDragStart={onDragStart} onClick={() => onOpen(t)}
-      onMouseMove={spotlightMove} className="kp-card kp-rise"
+      className="kp-card"
       style={{
         padding: 14, marginBottom: 11, cursor: "pointer", opacity: done ? 0.72 : 1,
-        animationDelay: `${idx * 40}ms`,
       }}>
       <div style={{ marginBottom: 9 }}>
         <span style={{
@@ -5281,8 +5244,8 @@ function TasksBoard({ tasks, projectId, onOpen, onReload, client, profile, photo
               <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 800, borderRadius: 20, padding: "1px 9px", background: "rgba(0,0,0,0.3)", color: meta.color }}>{colTasks.length}</span>
             </div>
             <div style={{ padding: 12, background: "rgba(255,255,255,0.012)" }}>
-              {colTasks.map((t, i) => (
-                <TaskCardBoard key={t.id} t={t} onOpen={onOpen} client={client} idx={i}
+              {colTasks.map(t => (
+                <TaskCardBoard key={t.id} t={t} onOpen={onOpen} client={client}
                   photos={photosByTask[t.id] || []}
                   appearance={appearance}
                   draggable onDragStart={() => setDragId(t.id)} />
@@ -5429,7 +5392,7 @@ function TasksView({ client, profile, projects, showToast, appearance, customize
               }}>{l}</button>
             ))}
           </div>
-          <MagneticButton onClick={() => setEditing({ projectId: fProject || "", status: "Новая", priority: "Обычный" })} className={BTN.primary}>+ Новая задача</MagneticButton>
+          <button type="button" onClick={() => setEditing({ projectId: fProject || "", status: "Новая", priority: "Обычный" })} className={BTN.primary}>+ Новая задача</button>
         </div>
       </div>
       <TaskQueueFilters tasks={loading ? [] : eligible} value={queue} onChange={setQueue} today={today} viewerId={profile.id} />
@@ -5466,7 +5429,7 @@ function TasksView({ client, profile, projects, showToast, appearance, customize
        !shown.length && queue !== "all" ? <Empty text="Нет задач по этому отбору" /> :
        view === "board" ? <TasksBoard tasks={shown} projectId={fProject} onOpen={setEditing} onReload={reload} client={client} profile={profile} photosByTask={photosByTask} showToast={showToast} appearance={appearance} /> :
        <div>
-         {listShown.map((t, i) => <TaskRowList key={t.id} t={t} onOpen={setEditing} idx={i} appearance={appearance} />)}
+         {listShown.map(t => <TaskRowList key={t.id} t={t} onOpen={setEditing} appearance={appearance} />)}
          {!listShown.length && <div style={{ color: "var(--text-tertiary)", padding: "24px 0", textAlign: "center" }}>Задач нет</div>}
        </div>}
       {editing && <TaskModal task={editing} client={client} profile={profile} projects={projects}
@@ -5932,9 +5895,9 @@ function Finance({ txs, setTxs, client, ownerId, showToast, projects = [], share
         </div>
         <input type="month" value={monthF} onChange={e=>setMonthF(e.target.value)}
           style={{...BASE_INPUT,width:"auto",padding:"4px 12px",fontSize:13}}/>
-        <MagneticButton onClick={()=>setModal("add")} className={BTN.primary} style={{marginLeft:"auto"}}>
+        <button type="button" onClick={()=>setModal("add")} className={BTN.primary} style={{marginLeft:"auto"}}>
           + Добавить запись
-        </MagneticButton>
+        </button>
         <button onClick={()=>setCsvModal(true)} style={{
           fontSize:12,padding:"7px 12px",borderRadius:8,cursor:"pointer",fontWeight:600,
           background:"#6ee7a822",border:"1px solid #6ee7a844",color:"#6ee7a8",flexShrink:0,
@@ -6011,7 +5974,7 @@ function Finance({ txs, setTxs, client, ownerId, showToast, projects = [], share
           ? <Empty text="Нет записей за выбранный период"/>
           : filtered.map(t=>(
             <AppearancePanel key={t.id} panelId={PANEL_IDS.financeTransactions} appearance={appearance}>
-            <div onMouseMove={spotlightMove} className="kp-card" style={{
+            <div className="kp-card" style={{
               padding:"12px 16px",display:"flex",alignItems:"center",gap:12,
             }}>
               <div style={{width:4,height:36,borderRadius:2,flexShrink:0,
@@ -7965,9 +7928,9 @@ function ClientsPage({ clients, setClients, projects, client, ownerId, showToast
             <Chip key={v} label={l} active={filterType === v} onClick={() => setFilterType(v)} />
           ))}
         </div>
-        <MagneticButton onClick={() => setModal("add")} className={BTN.primary} style={{ marginLeft: "auto" }}>
+        <button type="button" onClick={() => setModal("add")} className={BTN.primary} style={{ marginLeft: "auto" }}>
           + Новый клиент
-        </MagneticButton>
+        </button>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -7977,10 +7940,9 @@ function ClientsPage({ clients, setClients, projects, client, ownerId, showToast
               ? "Пока нет клиентов — нажми «Новый клиент»"
               : "Никто не подходит под фильтр"
           } />
-        ) : visible.map((c, i) => (
-          <div key={c.id} onMouseMove={spotlightMove} className="kp-card kp-rise" style={{
+        ) : visible.map(c => (
+          <div key={c.id} className="kp-card" style={{
             padding: 16,
-            animationDelay: `${i * 40}ms`,
           }}>
             <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
               <UserAvatar name={c.name} size={42} />
@@ -9593,7 +9555,6 @@ export default function App() {
 
   if (phase === "auth") return (
     <>
-      <BackgroundCanvas />
       <AuthScreen onAuthenticated={handleAuthenticated} />
       <Toast visible={toast.visible} text={toast.text} type={toast.type}/>
     </>
@@ -9644,7 +9605,6 @@ export default function App() {
       color: "#f7f8f8",
       fontFamily: "'Geist Variable', system-ui, -apple-system, sans-serif",
     }}>
-      <BackgroundCanvas />
 
       <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)}
         projects={projects} tasks={tasks} orders={clientProjects} hasClientRole={hasClientRole}
@@ -9675,7 +9635,7 @@ export default function App() {
       }}>
         {/* Логотип */}
         <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
-          <div className="brand-breathe" style={{
+          <div className="brand-frame" style={{
             width: 40, height: 40, flex: "0 0 auto",
             display: "grid", placeItems: "center", borderRadius: 12,
             background: "radial-gradient(120% 120% at 30% 20%, rgba(232,200,96,0.20), rgba(212,175,55,0.05))",
@@ -9693,7 +9653,7 @@ export default function App() {
             alignItems: "center",
             gap: 8,
           }}>
-            <span className="brand-shimmer">КЛИМАТ-ПРО</span>
+            <span className="brand-title">КЛИМАТ-ПРО</span>
             <span className="brand-static-gold" style={{
               fontWeight: 500,
               fontSize: 13,

@@ -116,21 +116,9 @@ input, textarea, select, button {
   font-variant-numeric: tabular-nums;
 }
 
-/*
-  Глассморфизм-карточка — полупрозрачный фон с эффектом размытия.
-  Применяется к самым важным акцентным элементам интерфейса (KPI,
-  модалки), чтобы создать визуальный фокус без излишнего шума.
-*/
 .glass-card {
-  /* iPhone-style «liquid glass»: меньше молочной заливки + умеренный blur + saturate
-     для сочности (без saturate матовое стекло уходит в серый «мутный» налёт). */
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0.006));
-  backdrop-filter: blur(10px) saturate(1.7);
-  -webkit-backdrop-filter: blur(10px) saturate(1.7);
+  background: linear-gradient(145deg, var(--bg-higher), var(--bg-elevated));
   border: 1px solid var(--border-default);
-  box-shadow:
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.06),
-    0 1px 3px 0 rgba(0, 0, 0, 0.6);
 }
 
 /*
@@ -238,62 +226,17 @@ input, textarea, select, button {
 /* Контент над фоновыми слоями */
 #root { position: relative; z-index: 1; }
 
-/* Фон теперь живой — компонент BackgroundCanvas.jsx (canvas: золотой aurora + сеть + искры).
-   Старые body::before (dotted) и body::after (статичная aurora) удалены: их заменяет canvas. */
-
-/* Карточка с премиальным hover: подъём + золотистая слоёная тень */
-.kp-hover-glow {
-  transition: transform 0.18s cubic-bezier(.2,.7,.3,1), box-shadow 0.18s, border-color 0.18s;
-}
-.kp-hover-glow:hover {
-  transform: translateY(-4px);
-  border-color: var(--border-gold);
-  box-shadow: 0 16px 40px rgba(0,0,0,0.5), 0 0 28px -6px var(--gold-glow);
+body {
+  min-height: 100vh;
+  background-image:
+    radial-gradient(ellipse at 14% 9%, var(--gold-bg-subtle), transparent 42%),
+    radial-gradient(ellipse at 84% 34%, var(--gold-bg-subtle), transparent 46%);
+  background-repeat: no-repeat;
+  background-size: 100% 850px;
 }
 
-/* Spotlight — золотистое свечение следует за курсором (координаты --mx/--my из JS) */
-.kp-spotlight { position: relative; }
-.kp-spotlight::before {
-  content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0;
-  border-radius: inherit; transition: opacity 0.2s;
-  background: radial-gradient(360px circle at var(--mx, 50%) var(--my, 50%), rgba(212,175,55,0.10), transparent 60%);
-}
-.kp-spotlight:hover::before { opacity: 1; }
-
-/* ──────────────────────────────────────────────────────────────────────────
-   max-wow РЕДИЗАЙН (2026-06-23): живой логотип, золотая «слиток»-рамка, бейдж ⌘K
-   Анимации перелива/блеска — ease-in-out alternate (блик качается, без рывка).
-   ────────────────────────────────────────────────────────────────────────── */
-
-/* «Дыхание» свечения — символ логотипа */
-@keyframes kp-breathe {
-  0%, 100% { box-shadow: 0 0 18px -3px rgba(232,200,96,0.45), inset 0 0 14px rgba(212,175,55,0.16); }
-  50%      { box-shadow: 0 0 42px 0 rgba(246,231,168,0.78), inset 0 0 24px rgba(232,200,96,0.32); }
-}
-.brand-breathe { animation: kp-breathe 4.6s ease-in-out infinite; }
-
-/* Золотой перелив текста логотипа (alternate — блик качается, без рывка) */
-@keyframes kp-shimmer { from { background-position: 0% center; } to { background-position: 220% center; } }
-.brand-shimmer {
-  background: linear-gradient(100deg, var(--gold-soft) 0%, var(--gold) 25%, #fff6d5 50%, var(--gold) 72%, var(--gold-soft) 100%);
-  background-size: 220% auto;
-  -webkit-background-clip: text; background-clip: text; color: transparent;
-  animation: kp-shimmer 4.6s ease-in-out infinite alternate;
-}
-
-/* Золотая «слиток»-рамка карточек: градиент-бордер через mask-composite + бегущий блеск */
-@keyframes kp-ingot { from { background-position: 0% 50%; } to { background-position: 260% 50%; } }
-.gold-ingot { position: relative; }
-.gold-ingot::before {
-  content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1.4px;
-  pointer-events: none; z-index: 3;
-  background: linear-gradient(135deg, var(--gold-soft) 0%, var(--gold) 22%, #fff6d5 46%, var(--gold-bright) 56%, var(--gold) 72%, var(--gold-soft) 100%);
-  background-size: 260% 260%;
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor; mask-composite: exclude;
-  opacity: .85; animation: kp-ingot 6s ease-in-out infinite alternate;
-}
-.gold-ingot:hover::before { opacity: .9; }
+.brand-frame { box-shadow: 0 0 18px -6px var(--gold-glow); }
+.brand-title { color: var(--gold-bright); }
 
 /* Компактный видимый бейдж ⌘K в шапке */
 .cmdk-badge {
@@ -315,66 +258,18 @@ input, textarea, select, button {
    Применять className="kp-card" к контейнерам карточек на экранах. */
 .kp-card {
   position: relative;
-  /* iPhone-style «liquid glass»: тёмное полупрозрачное стекло — сквозь него виден
-     живой золотой фон, но текст остаётся читаемым (в отличие от молочного светлого). */
-  background: linear-gradient(135deg, rgba(30,30,27,0.58), rgba(18,18,16,0.42));
-  backdrop-filter: blur(11px) saturate(1.55);
-  -webkit-backdrop-filter: blur(11px) saturate(1.55);
-  border-radius: 14px;
+  background: linear-gradient(145deg, var(--bg-higher), var(--bg-elevated));
   border: 1px solid var(--border-subtle);
-  transition: transform 0.18s cubic-bezier(.2,.7,.3,1), box-shadow 0.18s, border-color 0.18s;
-}
-.kp-card::before {
-  content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1.4px;
-  pointer-events: none; z-index: 3;
-  background: linear-gradient(135deg, var(--gold-soft) 0%, var(--gold) 22%, #fff6d5 46%, var(--gold-bright) 56%, var(--gold) 72%, var(--gold-soft) 100%);
-  background-size: 260% 260%;
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor; mask-composite: exclude;
-  opacity: .8; animation: kp-ingot 6s ease-in-out infinite alternate;
-}
-.kp-card::after {
-  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0;
-  transition: opacity 0.25s; z-index: 1;
-  background: radial-gradient(360px circle at var(--mx, 50%) var(--my, 50%), rgba(212,175,55,0.10), transparent 60%);
-}
-.kp-card:hover { transform: translateY(-3px); border-color: var(--border-gold); box-shadow: 0 16px 40px rgba(0,0,0,0.5), 0 0 26px -8px var(--gold-glow); }
-.kp-card:hover::before { opacity: .95; }
-.kp-card:hover::after { opacity: 1; }
-
-/* Фолбэк для браузеров без mask-composite (старый Android WebView / Chrome):
-   там псевдо-рамка ::before не вырезается маской — заливает карточку золотом
-   или не рисуется вовсе («рамок нет»). Отключаем псевдо-рамку и даём обычную
-   золотую границу. var(--border-gold) автоматически тянется и в теме контраста. */
-@supports not ((-webkit-mask-composite: xor) or (mask-composite: exclude)) {
-  .gold-ingot::before,
-  .kp-card::before { display: none; }
-  .gold-ingot { border: 1px solid var(--border-gold); }
-  .kp-card { border-color: var(--border-gold); }
+  border-radius: 14px;
 }
 
-/* Stagger-появление блоков (через inline animation-delay на элементах) */
-@keyframes kp-rise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
-.kp-rise { animation: kp-rise 0.6s cubic-bezier(.22,1,.36,1) both; }
+.kp-card:hover { border-color: var(--border-gold); }
 
-/* Кнопка версии: мягкая золотая пульсация, когда доступна новая версия сайта.
-   prefers-reduced-motion ниже глушит её вместе со всеми анимациями. */
 @keyframes kp-update-pulse {
   0%, 100% { box-shadow: 0 0 9px -3px var(--gold-glow); }
   50%      { box-shadow: 0 0 16px 0 var(--gold-glow); }
 }
 .kp-update-glow { animation: kp-update-pulse 1.8s ease-in-out infinite; }
-
-/* ── Логотип-ротация: внутренние анимации значков (обводка — золото url(#kpg)) ── */
-@keyframes kpl-flow { to { stroke-dashoffset: -32; } }
-@keyframes kpl-spin { to { transform: rotate(360deg); } }
-@keyframes kpl-tc { 0%, 42% { opacity: 1; } 58%, 100% { opacity: 0; } }
-@keyframes kpl-beat { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.15); } }
-.kpl-flow { stroke-dasharray: 9 7; animation: kpl-flow 2s linear infinite; }
-.kpl-spin { transform-origin: 12px 12px; animation: kpl-spin 4.4s linear infinite; }
-.kpl-cold { animation: kpl-tc 5s ease-in-out infinite; }
-.kpl-warm { animation: kpl-tc 5s ease-in-out infinite reverse; }
-.kpl-beat { transform-origin: 12px 14.5px; animation: kpl-beat 1.8s ease-in-out infinite; }
 
 /* Слоган №1 — благородное СТАТИЧНОЕ золото (антик, без перелива) + мягкое свечение.
    Не жёлтый: глубокие золотые стопы, лёгкий блик в середине. */
@@ -397,7 +292,6 @@ input, textarea, select, button {
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
-  .kp-hover-glow:hover { transform: none; }
 }
 
 /* Подписи осей recharts: var() в SVG-атрибуте (tick={{fill:"var(--…)"}}) НЕ резолвится,
@@ -410,7 +304,7 @@ input, textarea, select, button {
 /* ──────────────────────────────────────────────────────────────────────────
    РЕЖИМ «ПОВЫШЕНИЕ КОНТРАСТНОСТИ» (.hc на <html>) — per-device тумблер
    в «Профиле», localStorage('kp-hc'). Только осветляет палитру: белый текст, ярче фоны,
-   границы и золото (включая золотые рамки). Стекло и 3D-наклон НЕ трогает. */
+   границы и золото (включая золотые рамки). */
 .hc {
   --bg-base: #050505;
   --bg-elevated: #242420;
@@ -427,10 +321,9 @@ input, textarea, select, button {
 }
 /* Золотые рамки — ярче в этом режиме (НЕ скрываем — иначе на ПК рамки пропадали) */
 .hc .kp-card::before,
-.hc .gold-ingot::before { opacity: .95; }
 
 /* ── Account appearance system ─────────────────────────────────────────── */
-.kp-appearance-surface { position: relative; isolation: isolate; transition: box-shadow .24s ease, border-color .24s ease, background .24s ease, transform .24s ease; }
+.kp-appearance-surface { position: relative; isolation: isolate; transition: border-color .16s ease; }
 .kp-appearance-surface::before, .kp-appearance-surface::after,
 .kp-appearance-live-preview::before, .kp-appearance-live-preview::after,
 .kp-appearance-choice-preview::before, .kp-appearance-choice-preview::after {
@@ -461,28 +354,11 @@ input, textarea, select, button {
 .kp-appearance-surface.kp-skin-aurora { background: radial-gradient(90% 100% at 0% 0%, rgba(93,175,185,.15), transparent 58%), radial-gradient(70% 90% at 100% 10%, rgba(212,175,55,.12), transparent 62%), #0b1011 !important; border-color: rgba(126,204,207,.20) !important; }
 .kp-appearance-surface.kp-skin-paper { background: linear-gradient(rgba(212,175,55,.04) 1px, transparent 1px), linear-gradient(90deg, rgba(212,175,55,.04) 1px, transparent 1px), #151512 !important; background-size: 18px 18px !important; border-color: rgba(212,175,55,.22) !important; }
 
-@keyframes kp-ui-shimmer { to { background-position: 220% 0; } }
-@keyframes kp-ui-pulse { 50% { box-shadow: 0 0 28px -4px rgba(232,200,96,.46); } }
-@keyframes kp-ui-border { to { filter: hue-rotate(26deg); } }
-@keyframes kp-ui-breathe { 50% { background-position: 100% 50%; } }
-@keyframes kp-ui-scan { to { transform: translateY(390%); } }
-@keyframes kp-ui-wave { 50% { border-radius: 26px 14px 24px 12px; } }
-.kp-effect-glow { box-shadow: 0 0 28px -8px rgba(212,175,55,.46); }
-.kp-effect-shimmer::after { background: linear-gradient(110deg, transparent 25%, rgba(255,246,213,.18) 48%, transparent 72%); background-size: 220% 100%; animation: kp-ui-shimmer 6s linear infinite; }
-.kp-effect-pulse { animation: kp-ui-pulse 3.2s ease-in-out infinite; }
-.kp-effect-lift { transition: transform .24s ease, box-shadow .24s ease; }
-.kp-effect-lift:hover { transform: translateY(-4px); box-shadow: 0 20px 45px rgba(0,0,0,.30); }
-.kp-effect-tilt { transform: perspective(900px) rotateX(var(--kp-tilt-x, 0)) rotateY(var(--kp-tilt-y, 0)); transition: transform .12s ease-out; }
-.kp-effect-spark::after { background: linear-gradient(160deg, transparent 57%, rgba(212,175,55,.12) 58%, transparent 59%) bottom / 18px 100% repeat-x; }
-.kp-effect-flip { cursor: pointer; }
-.kp-effect-flip:active { transform: rotateY(7deg) scale(.992); }
-.kp-effect-border-flow::before { padding: 1px; background: conic-gradient(from 0deg, #8d6a17, #fff1ad, #d4af37, #6d5111, #8d6a17); -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); -webkit-mask-composite: xor; mask-composite: exclude; animation: kp-ui-border 4s linear infinite; }
-.kp-effect-grain::after { opacity: .20; background-image: radial-gradient(rgba(255,255,255,.24) .6px, transparent .8px); background-size: 5px 5px; mix-blend-mode: soft-light; }
-.kp-effect-breathe { background-size: 150% 150%; animation: kp-ui-breathe 6s ease-in-out infinite; }
-.kp-effect-spotlight::after { opacity: .5; background: radial-gradient(280px circle at var(--kp-pointer-x, 50%) var(--kp-pointer-y, 50%), rgba(255,246,213,.14), transparent 65%); }
-.kp-effect-scan::after { inset: -35% 0 auto; height: 35%; background: linear-gradient(transparent, rgba(212,175,55,.14), transparent); animation: kp-ui-scan 6s linear infinite; }
-.kp-effect-bloom::after { opacity: .45; background: radial-gradient(circle at 50% 0%, rgba(255,246,213,.18), transparent 60%); }
-.kp-effect-wave { animation: kp-ui-wave 5s ease-in-out infinite; }
+.kp-effect-glow { box-shadow: 0 0 14px -6px var(--gold-glow); }
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .kp-effect-lift { transition: transform .16s ease-out; }
+  .kp-effect-lift:hover { transform: translateY(-2px); }
+}
 
 .kp-admin-create-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 9px; align-items: center; }
 
@@ -563,7 +439,6 @@ input, textarea, select, button {
 
 @media (prefers-reduced-motion: reduce) {
   .kp-appearance-surface, .kp-appearance-surface::before, .kp-appearance-surface::after { animation: none !important; transition: none !important; transform: none !important; }
-  .kp-effect-shimmer::after, .kp-effect-scan::after { display: none; }
 }
 
 /* Банк: на телефоне каждая операция становится компактной карточкой, а не

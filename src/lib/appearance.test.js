@@ -7,7 +7,8 @@ import {
   deserializeAppearance,
   getAllowedEffects,
   filterAppearancePanelsForRole,
-  shouldUseLegacyCardTilt,
+  workspaceEffect,
+  getWorkspaceEffects,
   isAllowedPair,
   resolvePanelAppearance,
   sanitizeAppearance,
@@ -50,10 +51,14 @@ describe("appearance catalog", () => {
     expect(filterAppearancePanelsForRole(panels, "client")).toEqual([{ id: PANEL_IDS.dashboardKpis }]);
   });
 
-  it("disables the legacy inline tilt on appearance-managed cards", () => {
-    expect(shouldUseLegacyCardTilt("glass-card kp-hover-glow")).toBe(true);
-    expect(shouldUseLegacyCardTilt("glass-card kp-appearance-surface kp-effect-tilt")).toBe(false);
-    expect(shouldUseLegacyCardTilt("kp-appearance-surface kp-effect-lift")).toBe(false);
+  it("renders only light effects while retaining legacy stored settings", () => {
+    expect(getWorkspaceEffects("classic").map(({ id }) => id)).toEqual(["none", "glow", "lift"]);
+    expect(getWorkspaceEffects("paper").map(({ id }) => id)).toEqual(["none", "lift"]);
+    expect(workspaceEffect("shimmer")).toBe("none");
+    expect(workspaceEffect("tilt")).toBe("none");
+    expect(workspaceEffect("lift")).toBe("lift");
+    const stored = { global_skin_id: "classic", global_effect_id: "shimmer" };
+    expect(serializeAppearance(deserializeAppearance(stored)).global_effect_id).toBe("shimmer");
   });
 
   it("exposes only allowed effects for a skin", () => {

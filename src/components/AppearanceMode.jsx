@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { EFFECTS, SKINS, getAllowedEffects, resetAppearance, withGlobalAppearance, withPanelOverride, withoutPanelOverride } from "../lib/appearance.js";
+import { EFFECTS, SKINS, getWorkspaceEffects, workspaceEffect, resetAppearance, withGlobalAppearance, withPanelOverride, withoutPanelOverride } from "../lib/appearance.js";
 import AppearancePanel from "./AppearancePanel.jsx";
 
 function Choice({ item, selected, disabled = false, onClick, previewClassName = "" }) {
@@ -38,7 +38,8 @@ export default function AppearanceMode({
   const [resetArmed, setResetArmed] = useState(false);
   const dialogRef = useRef(null);
   const target = activePanelId ? draft.panelOverrides?.[activePanelId] || draft : draft;
-  const allowedEffects = useMemo(() => getAllowedEffects(target.skinId), [target.skinId]);
+  const effectId = workspaceEffect(target.effectId);
+  const allowedEffects = useMemo(() => getWorkspaceEffects(target.skinId), [target.skinId]);
   const panelGroups = useMemo(() => panels.reduce((groups, panel) => {
     const group = panel.group || "Панели";
     (groups[group] ||= []).push(panel);
@@ -47,8 +48,7 @@ export default function AppearanceMode({
   const targetTitle = activePanelId ? `Панель: ${panelLabel || activePanelId}` : "Общий стиль";
 
   const setSkin = (skinId) => {
-    const nextEffect = getAllowedEffects(skinId).some(({ id }) => id === target.effectId)
-      ? target.effectId : "none";
+    const nextEffect = getWorkspaceEffects(skinId).some(({ id }) => id === effectId) ? effectId : "none";
     const nextPair = { skinId, effectId: nextEffect };
     onChange(activePanelId ? withPanelOverride(draft, activePanelId, nextPair) : withGlobalAppearance(draft, nextPair));
   };
@@ -137,7 +137,7 @@ export default function AppearanceMode({
               <div className="kp-appearance-preview-icon">▣</div>
             </div>
             <div className="kp-appearance-preview-caption">
-              {SKINS.find((skin) => skin.id === target.skinId)?.label} <b>+</b> {EFFECTS.find((effect) => effect.id === target.effectId)?.label}
+              {SKINS.find((skin) => skin.id === target.skinId)?.label} <b>+</b> {EFFECTS.find((effect) => effect.id === effectId)?.label}
             </div>
           </div>
           </AppearancePanel>
@@ -146,9 +146,9 @@ export default function AppearanceMode({
             {SKINS.map((skin) => <Choice key={skin.id} item={skin} selected={target.skinId === skin.id} previewClassName={`kp-skin-${skin.id}`} onClick={() => setSkin(skin.id)} />)}
           </div>
 
-          <div className="kp-appearance-picker-heading"><span>2</span><div><h2>Эффект</h2><p>Доступны только подходящие для выбранного скина варианты.</p></div></div>
+          <div className="kp-appearance-picker-heading"><span>2</span><div><h2>Эффект</h2><p>Эффекты без постоянной анимации.</p></div></div>
           <div className="kp-appearance-choice-grid kp-appearance-effects">
-            {allowedEffects.map((effect) => <Choice key={effect.id} item={effect} selected={target.effectId === effect.id} previewClassName={`kp-skin-${target.skinId} kp-effect-${effect.id}`} onClick={() => setEffect(effect.id)} />)}
+            {allowedEffects.map((effect) => <Choice key={effect.id} item={effect} selected={effectId === effect.id} previewClassName={`kp-skin-${target.skinId} kp-effect-${effect.id}`} onClick={() => setEffect(effect.id)} />)}
           </div>
         </section>
       </main>

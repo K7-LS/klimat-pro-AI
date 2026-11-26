@@ -68,8 +68,15 @@ const EFFECT_IDS = new Set(EFFECTS.map(({ id }) => id));
 const PANEL_ID_SET = new Set(Object.values(PANEL_IDS));
 const ADMIN_PANEL_IDS = new Set([PANEL_IDS.adminUsers, PANEL_IDS.adminStats, PANEL_IDS.adminActivity]);
 
-const STATIC_EFFECTS = ["none", "grain"];
-const MOTION_EFFECTS = ["glow", "shimmer", "pulse", "lift", "spark", "flip", "border-flow", "breathe", "spotlight", "scan", "bloom", "wave"];
+const WORKSPACE_EFFECTS = new Set(["none", "glow", "lift"]);
+
+export function workspaceEffect(effectId) {
+  return WORKSPACE_EFFECTS.has(effectId) ? effectId : "none";
+}
+
+export function getWorkspaceEffects(skinId) {
+  return getAllowedEffects(skinId).filter(({ id }) => WORKSPACE_EFFECTS.has(id));
+}
 
 // A deliberately conservative relation: interaction-heavy 3D is enabled only
 // on skins that retain enough contrast and visual depth for it.
@@ -121,10 +128,6 @@ export function getAllowedEffects(skinId) {
 export function filterAppearancePanelsForRole(panels, role) {
   if (!Array.isArray(panels)) return [];
   return role === "admin" ? panels : panels.filter(({ id }) => !ADMIN_PANEL_IDS.has(id));
-}
-
-export function shouldUseLegacyCardTilt(className = "") {
-  return !String(className).split(/\s+/).includes("kp-appearance-surface");
 }
 
 export function sanitizeAppearance(raw) {
@@ -191,6 +194,3 @@ export function withoutPanelOverride(preferences, panelId) {
 export function resetAppearance() {
   return copyDefault();
 }
-
-export const APPEARANCE_STATIC_EFFECTS = STATIC_EFFECTS;
-export const APPEARANCE_MOTION_EFFECTS = MOTION_EFFECTS;
