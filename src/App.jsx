@@ -10,16 +10,16 @@ import { compareTaskDue, dueState, dueSuffix, DUE_COLORS, isActiveTask, matchesT
 import { projectRemaining, paymentsByProject as groupPaymentsByProject, clientTotals, attentionTasks } from "./lib/clientMetrics.js";
 import { validateNewUser } from "./lib/userCreateValidation.js";
 import { parseYandexRows, classifyOperation, categorize, dedupe, normalizeMerchant, hashOperation } from "./lib/bankParsers.js";
-import { PANEL_IDS, deserializeAppearance, filterAppearancePanelsForRole, resetAppearance, serializeAppearance, withoutPanelOverride } from "./lib/appearance.js";
+import { cacheSelfTransferNames, fetchSelfTransferNames, normalizeSelfTransferNames, readCachedSelfTransferNames, upsertSelfTransferNames } from "./lib/transferNamePreferences.js";
 import { formHasChanges, ModalDraftContext, useBackdropDismiss, useGuardedClose, useModalDraft } from "./components/UnsavedChanges";
 import TaskQueueFilters from "./components/TaskQueueFilters";
 import NotificationBell from "./components/NotificationBell";
+import MagneticButton from "./components/MagneticButton";
 import CommandPalette from "./components/CommandPalette";
 import HelpModal from "./components/HelpModal";
 import TourModal from "./components/TourModal";
 import { helpSectionsFor, shouldAutoStartTour } from "./lib/helpContent";
-import AppearanceMode from "./components/AppearanceMode";
-import AppearancePanel from "./components/AppearancePanel";
+import BackgroundCanvas from "./components/BackgroundCanvas";
 import McpAccessControl from "./components/McpAccessControl";
 import { loadMcpAccessMap } from "./lib/mcpAccess.js";
 import { motion, AnimatePresence } from "framer-motion";
@@ -50,22 +50,6 @@ import {
   CartesianGrid, Tooltip, Legend, LineChart, Line,
   ResponsiveContainer
 } from "recharts";
-
-const APPEARANCE_PANELS = [
-  { group: "Дашборд", id: PANEL_IDS.dashboardKpis, label: "Показатели" },
-  { group: "Дашборд", id: PANEL_IDS.dashboardAttention, label: "Требует внимания" },
-  { group: "Дашборд", id: PANEL_IDS.dashboardFinance, label: "Финансовые карточки" },
-  { group: "Дашборд", id: PANEL_IDS.dashboardProjects, label: "Карточки проектов" },
-  { group: "Проекты", id: PANEL_IDS.projectsList, label: "Карточки списка" },
-  { group: "Задачи", id: PANEL_IDS.tasksBoard, label: "Карточки доски" },
-  { group: "Задачи", id: PANEL_IDS.tasksList, label: "Строки списка" },
-  { group: "Финансы", id: PANEL_IDS.financeSummary, label: "Карточки сводки" },
-  { group: "Финансы", id: PANEL_IDS.financeCategories, label: "Диаграммы категорий" },
-  { group: "Финансы", id: PANEL_IDS.financeTransactions, label: "Операции" },
-  { group: "Admin", id: PANEL_IDS.adminUsers, label: "Пользователи" },
-  { group: "Admin", id: PANEL_IDS.adminStats, label: "Статистика" },
-  { group: "Admin", id: PANEL_IDS.adminActivity, label: "Журнал событий" },
-];
 
 // ════════════════════════════════════════════════════════════════════════════
 // HOOKS — общие утилиты
@@ -861,7 +845,7 @@ const ACTIVITY_LABELS = {
 };
 
 // №10: презентационная лента событий (переиспользуется админ-журналом и историей проекта)
-function ActivityFeed({ items, appearance, panelId }) {
+function ActivityFeed({ items, standardCards = false }) {
   if (!items?.length) return <Empty text="Журнал пуст" />;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -874,8 +858,8 @@ function ActivityFeed({ items, appearance, panelId }) {
         else if (d.label) detail = `${d.label}${d.value != null ? " · " + d.value : ""}`;
         else if (d.name) detail = d.name;
         else if (d.title) detail = d.title;
-        const row = (
-          <div key={a.id} className="kp-card" style={{
+        return (
+          <div key={a.id} onMouseMove={spotlightMove} className={standardCards ? "kp-card kp-standard-card" : "kp-card"} style={{
             display: "flex", alignItems: "center", gap: 12, padding: "8px 14px",
           }}>
             <span style={{
@@ -897,9 +881,6 @@ function ActivityFeed({ items, appearance, panelId }) {
             </div>
           </div>
         );
-        return panelId
-          ? <AppearancePanel key={a.id} panelId={panelId} appearance={appearance}>{row}</AppearancePanel>
-          : row;
       })}
     </div>
   );
@@ -923,26 +904,6 @@ async function fetchProfile(client, userId) {
     .single();
   if (error) throw error;
   return data;
-}
-
-async function fetchAppearancePreferences(client, userId) {
-  const { data, error } = await client
-    .from("user_appearance_preferences")
-    .select("user_id, global_skin_id, global_effect_id, panel_overrides, self_transfer_names, updated_at")
-    .eq("user_id", userId)
-    .maybeSingle();
-  if (error) throw error;
-  return deserializeAppearance(data);
-}
-
-async function upsertAppearancePreferences(client, userId, preferences) {
-  const { data, error } = await client
-    .from("user_appearance_preferences")
-    .upsert({ user_id: userId, ...serializeAppearance(preferences), updated_at: new Date().toISOString() }, { onConflict: "user_id" })
-    .select("user_id, global_skin_id, global_effect_id, panel_overrides, self_transfer_names, updated_at")
-    .single();
-  if (error) throw error;
-  return deserializeAppearance(data);
 }
 
 async function updateNotificationSettings(client, settings) {
@@ -1441,6 +1402,32 @@ function Field({ label, children, style = {} }) {
   return <div style={{ marginBottom: 14, ...style }}><Label>{label}</Label>{children}</div>;
 }
 
+// Базовая карточка — фон чуть светлее основного, тонкая граница, скруглённые углы
+// Spotlight: курсор → CSS-переменные --mx/--my для золотистого свечения (.kp-spotlight в index.css).
+function spotlightMove(e) {
+  const el = e.currentTarget;
+  const r = el.getBoundingClientRect();
+  el.style.setProperty("--mx", `${e.clientX - r.left}px`);
+  el.style.setProperty("--my", `${e.clientY - r.top}px`);
+}
+
+// 3D-tilt + spotlight для крупных карточек (Card/KpiCard). Уважает reduced-motion.
+function tiltMove(e) {
+  const el = e.currentTarget;
+  const r = el.getBoundingClientRect();
+  const px = (e.clientX - r.left) / r.width;
+  const py = (e.clientY - r.top) / r.height;
+  el.style.setProperty("--mx", `${e.clientX - r.left}px`);
+  el.style.setProperty("--my", `${e.clientY - r.top}px`);
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const ry = (px - 0.5) * 7;
+  const rx = -(py - 0.5) * 7;
+  el.style.transform = `perspective(1100px) rotateX(${rx.toFixed(2)}deg) rotateY(${ry.toFixed(2)}deg) translateY(-2px)`;
+}
+function tiltLeave(e) {
+  e.currentTarget.style.transform = "";
+}
+
 // Перезагрузка на актуальную версию: сначала забираем свежий service worker и ждём,
 // пока он возьмёт управление, и только потом reload — иначе старый SW отдаёт
 // закэшированный бандл и «обновление не срабатывает с первого раза».
@@ -1462,37 +1449,39 @@ async function reloadToLatest() {
   window.location.reload();
 }
 
-// Логотип показывает один значок (A·B·C·F·L) или сменяет их по кругу.
+// Живой логотип: значок плавно сменяется по кругу (A·B·C·F·L) или показывает один
+// выбранный (настройка устройства localStorage('kp-logo'); меняется в Профиле).
 // Обводка — золотой градиент url(#kpg). По умолчанию — ротация.
 const LOGO_ORDER = ["A", "B", "C", "F", "L"];
 function LogoMark() {
   const ICONS = {
     A: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="url(#kpg)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-        <g><path d="M3 12a4 4 0 0 1 4-4h9a3 3 0 1 0-3-3" /><path d="M3 17h13a3 3 0 1 1-3 3" /><path d="M3 7h4" /></g>
+        <g className="kpl-flow"><path d="M3 12a4 4 0 0 1 4-4h9a3 3 0 1 0-3-3" /><path d="M3 17h13a3 3 0 1 1-3 3" /><path d="M3 7h4" /></g>
       </svg>
     ),
     B: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="url(#kpg)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-        <g><path d="M10.827 16.379a6.082 6.082 0 0 1-8.618-7.002l5.412 1.45a6.082 6.082 0 0 1 7.002-8.618l-1.45 5.412a6.082 6.082 0 0 1 8.618 7.002l-5.412-1.45a6.082 6.082 0 0 1-7.002 8.618z" /></g>
+        <g className="kpl-spin"><path d="M10.827 16.379a6.082 6.082 0 0 1-8.618-7.002l5.412 1.45a6.082 6.082 0 0 1 7.002-8.618l-1.45 5.412a6.082 6.082 0 0 1 8.618 7.002l-5.412-1.45a6.082 6.082 0 0 1-7.002 8.618z" /></g>
         <circle cx="12" cy="12" r="1.4" fill="url(#kpg)" stroke="none" />
       </svg>
     ),
     C: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="url(#kpg)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-        <g><path d="M12 2v20M2 12h20M4.9 4.9l14.2 14.2M19.1 4.9L4.9 19.1" /></g>
+        <g className="kpl-cold"><path d="M12 2v20M2 12h20M4.9 4.9l14.2 14.2M19.1 4.9L4.9 19.1" /></g>
+        <g className="kpl-warm"><circle cx="12" cy="12" r="3.6" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></g>
       </svg>
     ),
     F: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="url(#kpg)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
         <path d="M4 11l8-6 8 6v8a1 1 0 0 1-1 1h-4v-5h-6v5H5a1 1 0 0 1-1-1z" />
-        <path d="M7 12h6a1.6 1.6 0 1 0-1.6-1.6" />
+        <path className="kpl-flow" d="M7 12h6a1.6 1.6 0 1 0-1.6-1.6" />
       </svg>
     ),
     L: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="url(#kpg)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
         <path d="M4 11l8-6 8 6v8a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z" />
-        <path d="M12 17.6s-3-2-3-4.1A1.6 1.6 0 0 1 12 12.1 1.6 1.6 0 0 1 15 13.5c0 2.1-3 4.1-3 4.1z" fill="url(#kpg)" stroke="none" />
+        <path className="kpl-beat" d="M12 17.6s-3-2-3-4.1A1.6 1.6 0 0 1 12 12.1 1.6 1.6 0 0 1 15 13.5c0 2.1-3 4.1-3 4.1z" fill="url(#kpg)" stroke="none" />
       </svg>
     ),
   };
@@ -1512,23 +1501,27 @@ function LogoMark() {
     return () => clearInterval(t);
   }, [single]);
   return (
-    <div style={{ position: "relative", width: 22, height: 22, display: "grid", placeItems: "center" }}>
+    <div style={{ position: "relative", width: 22, height: 22 }}>
       <svg width="0" height="0" style={{ position: "absolute" }} aria-hidden="true"><defs>
         <linearGradient id="kpg" x1="0" y1="0" x2="24" y2="24">
           <stop offset="0" stopColor="#f6e7a8" /><stop offset="0.6" stopColor="#d4af37" /><stop offset="1" stopColor="#9c7c22" />
         </linearGradient>
       </defs></svg>
-      {ICONS[LOGO_ORDER[idx]]}
+      {LOGO_ORDER.map((id, i) => (
+        <div key={id} style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", opacity: i === idx ? 1 : 0, transition: "opacity 1.4s ease-in-out" }}>{ICONS[id]}</div>
+      ))}
     </div>
   );
 }
 
 function Card({ children, style = {}, glass = false, className = "", ...surfaceProps }) {
+  const useLegacyTilt = !className.split(/\s+/).includes("kp-standard-card");
   if (glass) {
     return (
       <div
         {...surfaceProps}
-        className={`glass-card gold-card ${className}`.trim()}
+        onMouseMove={useLegacyTilt ? tiltMove : undefined} onMouseLeave={useLegacyTilt ? tiltLeave : undefined}
+        className={`glass-card kp-spotlight kp-hover-glow gold-ingot ${className}`.trim()}
         style={{ borderRadius: 14, padding: 18, ...style }}
       >
         {children}
@@ -1536,7 +1529,7 @@ function Card({ children, style = {}, glass = false, className = "", ...surfaceP
     );
   }
   return (
-    <div {...surfaceProps} className={`gold-card ${className}`.trim()} style={{
+    <div {...surfaceProps} onMouseMove={useLegacyTilt ? tiltMove : undefined} onMouseLeave={useLegacyTilt ? tiltLeave : undefined} className={`kp-spotlight kp-hover-glow gold-ingot ${className}`.trim()} style={{
       background: "#141414",
       border: "1px solid rgba(255,255,255,0.06)",
       borderRadius: 14,
@@ -1727,9 +1720,10 @@ function KpiCard({ label, value, sub, color = "#d4af37", Icon, format, trend, cl
   // используем её. Если значение строка (например, "65%") — оставляем как есть.
   // Иначе округляем число до целого.
   const isString = typeof value === "string";
+  const useLegacyTilt = !className.split(/\s+/).includes("kp-standard-card");
 
   return (
-    <div {...surfaceProps} className={`glass-card gold-card ${className}`.trim()} style={{ borderRadius: 14, padding: 16, position: "relative", overflow: "hidden" }}>
+    <div {...surfaceProps} onMouseMove={useLegacyTilt ? tiltMove : undefined} onMouseLeave={useLegacyTilt ? tiltLeave : undefined} className={`glass-card kp-spotlight kp-hover-glow gold-ingot ${className}`.trim()} style={{ borderRadius: 14, padding: 16, position: "relative", overflow: "hidden" }}>
       {/* Тонкое цветное свечение в углу — акцент в цвет показателя */}
       <div
         aria-hidden
@@ -3155,7 +3149,7 @@ function MyTasksCard({ data, ...surfaceProps }) {
 // ════════════════════════════════════════════════════════════════════════════
 // DASHBOARD — главная страница с KPI и графиками
 // ════════════════════════════════════════════════════════════════════════════
-function Dashboard({ projects, txs, tasks, onDrillStage, sharesByProject = {}, myShares = [], ownerId = null, paymentsByProject = {}, appearance, customizeMode, onSelectAppearancePanel, onResetAppearancePanel }) {
+function Dashboard({ projects, txs, tasks, onDrillStage, sharesByProject = {}, myShares = [], ownerId = null, paymentsByProject = {} }) {
   const [period, setPeriod] = useState("month");
   const range = periodRange(period);
   const prevRange = prevPeriodRange(period);
@@ -3201,7 +3195,6 @@ function Dashboard({ projects, txs, tasks, onDrillStage, sharesByProject = {}, m
   const itemVariants = { hidden: { opacity: 0, y: 12 }, visible: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] } } };
 
   const PERIODS = [["month", "Месяц"], ["quarter", "Квартал"], ["year", "Год"], ["all", "Всё"]];
-  const surface = (id, child) => <AppearancePanel panelId={id} appearance={appearance}>{child}</AppearancePanel>;
 
   return (
     <motion.div style={{ display: "flex", flexDirection: "column", gap: 16 }} variants={containerVariants} initial="hidden" animate="visible">
@@ -3224,11 +3217,11 @@ function Dashboard({ projects, txs, tasks, onDrillStage, sharesByProject = {}, m
       <motion.div variants={itemVariants}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
           <div onClick={() => onDrillStage && onDrillStage("Активные")} style={{ cursor: onDrillStage ? "pointer" : "default" }}>
-            {surface(PANEL_IDS.dashboardKpis, <KpiCard label="Активных проектов" value={active.length} Icon={FolderKanban} color="#d4af37" sub={`всего: ${projects.length}`} />)}
+            <KpiCard className="kp-standard-card" label="Активных проектов" value={active.length} Icon={FolderKanban} color="#d4af37" sub={`всего: ${projects.length}`} />
           </div>
-          {surface(PANEL_IDS.dashboardKpis, <KpiCard label="Портфель" value={totalContract} Icon={Briefcase} color="#d4af37" format={fmt} sub={`моё: ${fmt(mineInPortfolio)}`} />)}
-          {surface(PANEL_IDS.dashboardKpis, <KpiCard label="Получено" value={myReceived} Icon={BadgeCheck} color="#6ee7a8" format={fmt} sub={`жду: ${fmt(debtTotal)}`} />)}
-          {surface(PANEL_IDS.dashboardKpis, <KpiCard label="Баланс за период" value={bal.balance} Icon={Wallet} color={bal.balance >= 0 ? "#6ee7a8" : "#f8a3a3"} format={fmt} sub={`доходы ${fmt(bal.income)}`} trend={balanceTrend} />)}
+          <KpiCard className="kp-standard-card" label="Портфель" value={totalContract} Icon={Briefcase} color="#d4af37" format={fmt} sub={`моё: ${fmt(mineInPortfolio)}`} />
+          <KpiCard className="kp-standard-card" label="Получено" value={myReceived} Icon={BadgeCheck} color="#6ee7a8" format={fmt} sub={`жду: ${fmt(debtTotal)}`} />
+          <KpiCard className="kp-standard-card" label="Баланс за период" value={bal.balance} Icon={Wallet} color={bal.balance >= 0 ? "#6ee7a8" : "#f8a3a3"} format={fmt} sub={`доходы ${fmt(bal.income)}`} trend={balanceTrend} />
         </div>
       </motion.div>
 
@@ -3236,7 +3229,7 @@ function Dashboard({ projects, txs, tasks, onDrillStage, sharesByProject = {}, m
       <motion.div variants={itemVariants}>
         <p style={ZONE_TITLE("#f8a3a3")}>⚠ Требует внимания</p>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
-          {surface(PANEL_IDS.dashboardAttention, <Card>
+          <Card className="kp-standard-card">
             <SectionTitle icon={<AlertTriangle size={13} />}>Просроченные дедлайны проектов</SectionTitle>
             {overdue.length === 0
               ? <p style={{ color: "var(--text-tertiary)", fontSize: 13, margin: 0 }}>Всё в срок</p>
@@ -3246,8 +3239,8 @@ function Dashboard({ projects, txs, tasks, onDrillStage, sharesByProject = {}, m
                   <span style={{ color: "var(--text-tertiary)", fontSize: 11, flexShrink: 0, marginLeft: 8 }}>{fmtD(p.deadline)}</span>
                 </div>
               ))}
-          </Card>)}
-          {surface(PANEL_IDS.dashboardAttention, <MyTasksCard data={myT} />)}
+          </Card>
+          <MyTasksCard className="kp-standard-card" data={myT} />
         </div>
       </motion.div>
 
@@ -3255,7 +3248,7 @@ function Dashboard({ projects, txs, tasks, onDrillStage, sharesByProject = {}, m
       <motion.div variants={itemVariants}>
         <p style={ZONE_TITLE("#e8c860")}>💰 Финансы · за выбранный период</p>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16, marginBottom: 16 }}>
-          {surface(PANEL_IDS.dashboardFinance, <Card>
+          <Card className="kp-standard-card">
             <SectionTitle icon={<TrendingUp size={13} />}>Доходы и расходы</SectionTitle>
             {series.some(m => m.inc > 0 || m.exp > 0)
               ? <ResponsiveContainer width="100%" height={210}>
@@ -3269,19 +3262,19 @@ function Dashboard({ projects, txs, tasks, onDrillStage, sharesByProject = {}, m
                   </BarChart>
                 </ResponsiveContainer>
               : <Empty text="Нет финансовых записей за период" />}
-          </Card>)}
-          {surface(PANEL_IDS.dashboardFinance, <CashflowCard series={series} tt={tt} />)}
-          {surface(PANEL_IDS.dashboardFinance, <ExpenseByCategoryCard data={expCats} tt={tt} />)}
+          </Card>
+          <CashflowCard className="kp-standard-card" series={series} tt={tt} />
+          <ExpenseByCategoryCard className="kp-standard-card" data={expCats} tt={tt} />
         </div>
-        {surface(PANEL_IDS.dashboardFinance, <ReceivablesCard data={debt} />)}
-        {myShares?.length > 0 && surface(PANEL_IDS.dashboardFinance, <MySharesCard shares={myShares} />)}
+        <ReceivablesCard className="kp-standard-card" data={debt} />
+        {myShares?.length > 0 && <MySharesCard className="kp-standard-card" shares={myShares} />}
       </motion.div>
 
       {/* ЗОНА: Проекты */}
       <motion.div variants={itemVariants}>
         <p style={ZONE_TITLE("#93c5fd")}>📁 Проекты</p>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
-          {surface(PANEL_IDS.dashboardProjects, <Card>
+          <Card className="kp-standard-card">
             <SectionTitle icon={<BarChart3 size={13} />}>Проекты по стадиям</SectionTitle>
             {stageData.length > 0
               ? <ResponsiveContainer width="100%" height={210}>
@@ -3295,8 +3288,8 @@ function Dashboard({ projects, txs, tasks, onDrillStage, sharesByProject = {}, m
                   </PieChart>
                 </ResponsiveContainer>
               : <Empty text="Добавь первый проект" />}
-          </Card>)}
-          {surface(PANEL_IDS.dashboardProjects, <Card>
+          </Card>
+          <Card className="kp-standard-card">
             <SectionTitle icon={<Calendar size={13} />}>Ближайшие дедлайны</SectionTitle>
             {upcoming.length === 0
               ? <p style={{ color: "var(--text-tertiary)", fontSize: 13, margin: 0 }}>Нет запланированных дедлайнов</p>
@@ -3306,7 +3299,7 @@ function Dashboard({ projects, txs, tasks, onDrillStage, sharesByProject = {}, m
                   <span style={{ color: "#e8c860", fontSize: 11, flexShrink: 0, marginLeft: 8 }}>{fmtD(p.deadline)}</span>
                 </div>
               ))}
-          </Card>)}
+          </Card>
         </div>
       </motion.div>
 
@@ -3603,7 +3596,7 @@ function QuickEditPortal({ project, mode, anchorRect, isMobile, client, profile,
   );
 }
 
-function Projects({ projects, setProjects, clients, client, profile, ownerId, showToast, initialStageFilter = "Активные", sharesByProject, setSharesByProject, pendingProjectId, onProjectOpened, setPaymentsByProject, onMakeReport, appearance, customizeMode, onSelectAppearancePanel, onResetAppearancePanel }) {
+function Projects({ projects, setProjects, clients, client, profile, ownerId, showToast, initialStageFilter = "Активные", sharesByProject, setSharesByProject, pendingProjectId, onProjectOpened, setPaymentsByProject, onMakeReport }) {
   const [modal, setModal]             = useState(null);
   const [stageFilter, setStageFilter] = useState(initialStageFilter);
   const [confirmDel, setConfirmDel]   = useState(null);
@@ -3800,13 +3793,13 @@ function Projects({ projects, setProjects, clients, client, profile, ownerId, sh
             fontSize: 12, fontWeight: 600, cursor: "pointer", transition: "all .15s", whiteSpace: "nowrap",
           }}
         >{selectMode ? "Отмена" : "Выбрать"}</button>
-        <button type="button" onClick={()=>setModal("add")} className={BTN.primary}>+ Новый объект</button>
+        <MagneticButton onClick={()=>setModal("add")} className={BTN.primary}>+ Новый объект</MagneticButton>
       </div>
 
       <div style={{display:"flex",flexDirection:"column",gap:12}}>
         {visibleSorted.length===0
           ? <Empty text={stageFilter==="Все"?"Нет проектов — нажми «Новый объект»":`Нет проектов со стадией «${stageFilter}»`}/>
-          : visibleSorted.map(p=>{
+          : visibleSorted.map((p,i)=>{
             const meta = STAGE_META[p.stage]||{color:"#d4af37",progress:0};
             const isAwaitingPayment = p.stage==="Сдан заказчику";
             const isOverdue = p.deadline&&p.deadline<todayS&&!["Оплачен","Архив","Сдан заказчику"].includes(p.stage);
@@ -3815,8 +3808,7 @@ function Projects({ projects, setProjects, clients, client, profile, ownerId, sh
             const canEdit   = p.ownerId===profile?.id || profile?.role==="admin" || p.takenBy===profile?.id;
             const canManage = p.ownerId===profile?.id || profile?.role==="admin";
             return (
-              <AppearancePanel key={p.id} panelId={PANEL_IDS.projectsList} appearance={appearance}>
-              <div className="kp-card" style={{padding:16}}>
+              <div key={p.id} onMouseMove={spotlightMove} className="kp-card kp-rise kp-standard-card" style={{padding:16,animationDelay:`${i*40}ms`}}>
                 <div style={{display:"flex",alignItems:"flex-start",gap:12}}>
                   {selectMode && (
                     <div style={{paddingTop:2,flexShrink:0}} onClick={e => e.stopPropagation()}>
@@ -4134,7 +4126,6 @@ function Projects({ projects, setProjects, clients, client, profile, ownerId, sh
                   </div>
                 </div>
               </div>
-              </AppearancePanel>
             );
           })}
         {selectMode && selectedIds.size > 0 && (() => {
@@ -5116,16 +5107,16 @@ function TaskModal({ task, client, profile, projects, fixedProject = false, real
 }
 
 // Строка списка задач — те же данные, что на карточке доски, в одну плотную строку.
-function TaskRowList({ t, onOpen, appearance }) {
+function TaskRowList({ t, onOpen, idx = 0 }) {
   const today = taskCalendarDate();
   const due = dueState(t.dueDate, today);
   const sm = TASK_STATUS_META[t.status] || { color: "var(--text-tertiary)" };
   const pm = TASK_PRIORITY_META[t.priority] || TASK_PRIORITY_META["Обычный"];
   return (
-    <AppearancePanel panelId={PANEL_IDS.tasksList} appearance={appearance}>
-    <div onClick={() => onOpen(t)} className="kp-card" style={{
+    <div onClick={() => onOpen(t)} onMouseMove={spotlightMove} className="kp-card kp-rise kp-standard-card" style={{
       display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
       padding: "10px 14px", marginBottom: 8, cursor: "pointer",
+      animationDelay: `${idx * 40}ms`,
     }}>
       <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 20, background: sm.color + "1f", color: sm.color, whiteSpace: "nowrap" }}>{t.status}</span>
       <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 9px", borderRadius: 20, background: pm.bg, color: pm.color, whiteSpace: "nowrap" }}>{pm.label}</span>
@@ -5140,22 +5131,21 @@ function TaskRowList({ t, onOpen, appearance }) {
       </span>
       {t.hasOpenQuestion && <span title="есть открытый вопрос" style={{ color: "#e8c860", fontSize: 13 }}>💬</span>}
     </div>
-    </AppearancePanel>
   );
 }
 
 // Карточка задачи на доске — стиль B (мокап 2026-06-11). UserAvatar — общий компонент сайта.
-function TaskCardBoard({ t, onOpen, draggable, onDragStart, photos = [], client, appearance }) {
+function TaskCardBoard({ t, onOpen, draggable, onDragStart, photos = [], client, idx = 0 }) {
   const today = taskCalendarDate();
   const due = dueState(t.dueDate, today);
   const pm = TASK_PRIORITY_META[t.priority] || TASK_PRIORITY_META["Обычный"];
   const done = t.status === "Готово";
   return (
-    <AppearancePanel panelId={PANEL_IDS.tasksBoard} appearance={appearance}>
     <div draggable={draggable} onDragStart={onDragStart} onClick={() => onOpen(t)}
-      className="kp-card"
+      onMouseMove={spotlightMove} className="kp-card kp-rise kp-standard-card"
       style={{
         padding: 14, marginBottom: 11, cursor: "pointer", opacity: done ? 0.72 : 1,
+        animationDelay: `${idx * 40}ms`,
       }}>
       <div style={{ marginBottom: 9 }}>
         <span style={{
@@ -5203,11 +5193,10 @@ function TaskCardBoard({ t, onOpen, draggable, onDragStart, photos = [], client,
         </span>
       </div>
     </div>
-    </AppearancePanel>
   );
 }
 
-function TasksBoard({ tasks, projectId, onOpen, onReload, client, profile, photosByTask = {}, showToast, appearance }) {
+function TasksBoard({ tasks, projectId, onOpen, onReload, client, profile, photosByTask = {}, showToast }) {
   // колонки доски — без «Отменена» (намеренно; отменённые видны фильтром в списке)
   const cols = ["Новая", "В работе", "На проверке", "Готово"];
   const [dragId, setDragId] = useState(null);
@@ -5244,10 +5233,9 @@ function TasksBoard({ tasks, projectId, onOpen, onReload, client, profile, photo
               <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 800, borderRadius: 20, padding: "1px 9px", background: "rgba(0,0,0,0.3)", color: meta.color }}>{colTasks.length}</span>
             </div>
             <div style={{ padding: 12, background: "rgba(255,255,255,0.012)" }}>
-              {colTasks.map(t => (
-                <TaskCardBoard key={t.id} t={t} onOpen={onOpen} client={client}
+              {colTasks.map((t, i) => (
+                <TaskCardBoard key={t.id} t={t} onOpen={onOpen} client={client} idx={i}
                   photos={photosByTask[t.id] || []}
-                  appearance={appearance}
                   draggable onDragStart={() => setDragId(t.id)} />
               ))}
               <button onClick={() => onOpen({ projectId, status: col, priority: "Обычный" })} style={{
@@ -5263,7 +5251,7 @@ function TasksBoard({ tasks, projectId, onOpen, onReload, client, profile, photo
   );
 }
 
-function TasksView({ client, profile, projects, showToast, appearance, customizeMode, onSelectAppearancePanel, onResetAppearancePanel }) {
+function TasksView({ client, profile, projects, showToast }) {
   const [tasks, setTasks] = useState([]);
   const [photosByTask, setPhotosByTask] = useState({});
   const [loading, setLoading] = useState(true);
@@ -5392,7 +5380,7 @@ function TasksView({ client, profile, projects, showToast, appearance, customize
               }}>{l}</button>
             ))}
           </div>
-          <button type="button" onClick={() => setEditing({ projectId: fProject || "", status: "Новая", priority: "Обычный" })} className={BTN.primary}>+ Новая задача</button>
+          <MagneticButton onClick={() => setEditing({ projectId: fProject || "", status: "Новая", priority: "Обычный" })} className={BTN.primary}>+ Новая задача</MagneticButton>
         </div>
       </div>
       <TaskQueueFilters tasks={loading ? [] : eligible} value={queue} onChange={setQueue} today={today} viewerId={profile.id} />
@@ -5427,9 +5415,9 @@ function TasksView({ client, profile, projects, showToast, appearance, customize
       </details>
       {loading ? <div className="opacity-60">Загрузка…</div> :
        !shown.length && queue !== "all" ? <Empty text="Нет задач по этому отбору" /> :
-       view === "board" ? <TasksBoard tasks={shown} projectId={fProject} onOpen={setEditing} onReload={reload} client={client} profile={profile} photosByTask={photosByTask} showToast={showToast} appearance={appearance} /> :
+       view === "board" ? <TasksBoard tasks={shown} projectId={fProject} onOpen={setEditing} onReload={reload} client={client} profile={profile} photosByTask={photosByTask} showToast={showToast} /> :
        <div>
-         {listShown.map(t => <TaskRowList key={t.id} t={t} onOpen={setEditing} appearance={appearance} />)}
+         {listShown.map((t, i) => <TaskRowList key={t.id} t={t} onOpen={setEditing} idx={i} />)}
          {!listShown.length && <div style={{ color: "var(--text-tertiary)", padding: "24px 0", textAlign: "center" }}>Задач нет</div>}
        </div>}
       {editing && <TaskModal task={editing} client={client} profile={profile} projects={projects}
@@ -5809,7 +5797,7 @@ function CsvImportModal({ onClose, onImport, client, selfNames = [], existingHas
 // ════════════════════════════════════════════════════════════════════════════
 // FINANCE
 // ════════════════════════════════════════════════════════════════════════════
-function Finance({ txs, setTxs, client, ownerId, showToast, projects = [], sharesByProject = {}, myShares = [], paymentsByProject = {}, selfNames = [], appearance, customizeMode, onSelectAppearancePanel, onResetAppearancePanel }) {
+function Finance({ txs, setTxs, client, ownerId, showToast, projects = [], sharesByProject = {}, myShares = [], paymentsByProject = {}, selfNames = [] }) {
   const isMobile = useIsMobile(); // моб: пироги/гриды сворачиваем в колонку на телефоне
   const [modal, setModal]           = useState(null);
   const [typeFilter, setTypeFilter] = useState("all");
@@ -5883,7 +5871,6 @@ function Finance({ txs, setTxs, client, ownerId, showToast, projects = [], share
   const incByCatFull = projIncomeMonth > 0 ? [...incByCat, { name: "Проектные доходы", value: projIncomeMonth }] : incByCat;
 
   const tt = {background:"#141414",border:"1px solid #141414",borderRadius:8,fontSize:12,color:"white"};
-  const surface = (id, child) => <AppearancePanel panelId={id} appearance={appearance}>{child}</AppearancePanel>;
 
   return (
     <div>
@@ -5895,9 +5882,9 @@ function Finance({ txs, setTxs, client, ownerId, showToast, projects = [], share
         </div>
         <input type="month" value={monthF} onChange={e=>setMonthF(e.target.value)}
           style={{...BASE_INPUT,width:"auto",padding:"4px 12px",fontSize:13}}/>
-        <button type="button" onClick={()=>setModal("add")} className={BTN.primary} style={{marginLeft:"auto"}}>
+        <MagneticButton onClick={()=>setModal("add")} className={BTN.primary} style={{marginLeft:"auto"}}>
           + Добавить запись
-        </button>
+        </MagneticButton>
         <button onClick={()=>setCsvModal(true)} style={{
           fontSize:12,padding:"7px 12px",borderRadius:8,cursor:"pointer",fontWeight:600,
           background:"#6ee7a822",border:"1px solid #6ee7a844",color:"#6ee7a8",flexShrink:0,
@@ -5906,8 +5893,7 @@ function Finance({ txs, setTxs, client, ownerId, showToast, projects = [], share
         </button>
       </div>
 
-      {(projReceived > 0 || projReceivable > 0) && surface(PANEL_IDS.financeSummary,
-        <Card style={{ marginBottom: 16 }}>
+      {(projReceived > 0 || projReceivable > 0) && <Card className="kp-standard-card" style={{ marginBottom: 16 }}>
           <SectionTitle>💼 По проектам · моя доля (всего)</SectionTitle>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div style={{ textAlign: "center" }}>
@@ -5919,7 +5905,7 @@ function Finance({ txs, setTxs, client, ownerId, showToast, projects = [], share
               <div style={{ fontSize: 16, fontWeight: 900, color: projReceivable > 0 ? "#f8a3a3" : "var(--text-tertiary)", marginTop: 4 }}>{fmt(projReceivable)}</div>
             </div>
           </div>
-        </Card>)}
+        </Card>}
 
       <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:16}}>
         {[
@@ -5927,19 +5913,17 @@ function Finance({ txs, setTxs, client, ownerId, showToast, projects = [], share
           {label:"Расходы",val:exp,color:"#f8a3a3"},
           {label:"Баланс",val:incTotal-exp,color:incTotal>=exp?"#6ee7a8":"#f8a3a3"},
         ].map(r=>(
-          <AppearancePanel key={r.label} panelId={PANEL_IDS.financeSummary} appearance={appearance}>
-          <Card style={{textAlign:"center"}}>
+          <Card key={r.label} className="kp-standard-card" style={{textAlign:"center"}}>
             <Label>{r.label}</Label>
             <div style={{fontSize:16,fontWeight:900,color:r.color,marginTop:4}}>{fmt(r.val)}</div>
           </Card>
-          </AppearancePanel>
         ))}
       </div>
 
       {(incByCatFull.length>0||expByCat.length>0)&&(
         <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"1fr 1fr",gap:16,marginBottom:16}}>
           {incByCatFull.length>0&&(
-            surface(PANEL_IDS.financeCategories, <Card>
+            <Card className="kp-standard-card">
               <SectionTitle>Источники доходов</SectionTitle>
               <ResponsiveContainer width="100%" height={240}>
                 <PieChart>
@@ -5950,10 +5934,10 @@ function Finance({ txs, setTxs, client, ownerId, showToast, projects = [], share
                   <Legend iconType="circle" iconSize={7} verticalAlign="bottom" wrapperStyle={{paddingTop:6,fontSize:10,lineHeight:"15px"}} formatter={v=><span style={{fontSize:10,color:"var(--text-secondary)"}}>{v}</span>}/>
                 </PieChart>
               </ResponsiveContainer>
-            </Card>)
+            </Card>
           )}
           {expByCat.length>0&&(
-            surface(PANEL_IDS.financeCategories, <Card>
+            <Card className="kp-standard-card">
               <SectionTitle>Структура расходов</SectionTitle>
               <ResponsiveContainer width="100%" height={240}>
                 <PieChart>
@@ -5964,7 +5948,7 @@ function Finance({ txs, setTxs, client, ownerId, showToast, projects = [], share
                   <Legend iconType="circle" iconSize={7} verticalAlign="bottom" wrapperStyle={{paddingTop:6,fontSize:10,lineHeight:"15px"}} formatter={v=><span style={{fontSize:10,color:"var(--text-secondary)"}}>{v}</span>}/>
                 </PieChart>
               </ResponsiveContainer>
-            </Card>)
+            </Card>
           )}
         </div>
       )}
@@ -5973,8 +5957,7 @@ function Finance({ txs, setTxs, client, ownerId, showToast, projects = [], share
         {filtered.length===0
           ? <Empty text="Нет записей за выбранный период"/>
           : filtered.map(t=>(
-            <AppearancePanel key={t.id} panelId={PANEL_IDS.financeTransactions} appearance={appearance}>
-            <div className="kp-card" style={{
+            <div key={t.id} onMouseMove={spotlightMove} className="kp-card kp-standard-card" style={{
               padding:"12px 16px",display:"flex",alignItems:"center",gap:12,
             }}>
               <div style={{width:4,height:36,borderRadius:2,flexShrink:0,
@@ -6003,7 +5986,6 @@ function Finance({ txs, setTxs, client, ownerId, showToast, projects = [], share
                 }}
               >{confirmDel===t.id?"✓?":"🗑️"}</button>
             </div>
-            </AppearancePanel>
           ))}
       </div>
 
@@ -7928,9 +7910,9 @@ function ClientsPage({ clients, setClients, projects, client, ownerId, showToast
             <Chip key={v} label={l} active={filterType === v} onClick={() => setFilterType(v)} />
           ))}
         </div>
-        <button type="button" onClick={() => setModal("add")} className={BTN.primary} style={{ marginLeft: "auto" }}>
+        <MagneticButton onClick={() => setModal("add")} className={BTN.primary} style={{ marginLeft: "auto" }}>
           + Новый клиент
-        </button>
+        </MagneticButton>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -7940,9 +7922,10 @@ function ClientsPage({ clients, setClients, projects, client, ownerId, showToast
               ? "Пока нет клиентов — нажми «Новый клиент»"
               : "Никто не подходит под фильтр"
           } />
-        ) : visible.map(c => (
-          <div key={c.id} className="kp-card" style={{
+        ) : visible.map((c, i) => (
+          <div key={c.id} onMouseMove={spotlightMove} className="kp-card kp-rise" style={{
             padding: 16,
+            animationDelay: `${i * 40}ms`,
           }}>
             <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
               <UserAvatar name={c.name} size={42} />
@@ -8102,10 +8085,11 @@ function ClientsPage({ clients, setClients, projects, client, ownerId, showToast
 // ════════════════════════════════════════════════════════════════════════════
 // PROFILE MODAL — настройки своего профиля (v1.5)
 // ════════════════════════════════════════════════════════════════════════════
-function ProfileModal({ profile, client, selfTransferNames = [], onSaveSelfTransferNames, onClose, onProfileUpdated, onOpenAppearance, onOpenHelp, showToast }) {
+function ProfileModal({ profile, client, selfTransferNames = [], onSaveSelfTransferNames, onClose, onProfileUpdated, onOpenHelp, showToast }) {
   const [name, setSaveName]      = useState(profile?.name || "");
   const [position, setPosition]  = useState(profile?.position || "");
-  const [selfTransferNamesText, setSelfTransferNamesText] = useState(() => selfTransferNames.join("\n"));
+  const [nameVariantsDraft, setNameVariantsDraft] = useState(null);
+  const selfTransferNamesText = nameVariantsDraft ?? selfTransferNames.join("\n");
   const [savingSelfTransferNames, setSavingSelfTransferNames] = useState(false);
   const [saving, setSaving]      = useState(false);
   // Режим высокого контраста — per-device (localStorage), не в аккаунте: зависит от экрана.
@@ -8171,11 +8155,11 @@ function ProfileModal({ profile, client, selfTransferNames = [], onSaveSelfTrans
   };
 
   const saveSelfTransferNames = async () => {
-    const names = [...new Set(selfTransferNamesText.split(/[\n,]/).map((item) => item.trim()).filter((item) => item.length >= 2))].slice(0, 12);
+    const names = normalizeSelfTransferNames(selfTransferNamesText.split(/[\n,]/));
     setSavingSelfTransferNames(true);
     try {
       await onSaveSelfTransferNames?.(names);
-      setSelfTransferNamesText(names.join("\n"));
+      setNameVariantsDraft(current => current === nameVariantsDraft ? null : current);
       showToast("✓ Варианты имени сохранены");
     } catch {
       showToast("Не удалось сохранить варианты имени", "error");
@@ -8300,7 +8284,7 @@ function ProfileModal({ profile, client, selfTransferNames = [], onSaveSelfTrans
       <div style={{ marginBottom: 16, padding: "12px 14px", borderRadius: 10, background: "rgba(147,197,253,0.04)", border: "1px solid rgba(147,197,253,0.15)" }}>
         <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-primary)", marginBottom: 5 }}>Варианты имени для банковского импорта</div>
         <p style={{ fontSize: 11, color: "var(--text-tertiary)", margin: "0 0 8px", lineHeight: 1.45 }}>По одному варианту на строку. Нужны только для распознавания переводов себе; в интерфейсе команды они не показываются.</p>
-        <textarea value={selfTransferNamesText} onChange={(event) => setSelfTransferNamesText(event.target.value)} placeholder={"Например:\nДаниил Владимирович Е.\nЕлисеев Даниил"} rows={3} style={{ width: "100%", resize: "vertical", minHeight: 62, boxSizing: "border-box", borderRadius: 8, border: "1px solid var(--border-subtle)", background: "rgba(0,0,0,.16)", color: "var(--text-primary)", padding: "8px 10px", fontFamily: "inherit", fontSize: 12, lineHeight: 1.4 }} />
+        <textarea value={selfTransferNamesText} onChange={(event) => setNameVariantsDraft(event.target.value)} placeholder={"Например:\nДаниил Владимирович Е.\nЕлисеев Даниил"} rows={3} style={{ width: "100%", resize: "vertical", minHeight: 62, boxSizing: "border-box", borderRadius: 8, border: "1px solid var(--border-subtle)", background: "rgba(0,0,0,.16)", color: "var(--text-primary)", padding: "8px 10px", fontFamily: "inherit", fontSize: 12, lineHeight: 1.4 }} />
         <button type="button" onClick={saveSelfTransferNames} disabled={savingSelfTransferNames} className={BTN.ghost} style={{ marginTop: 8, padding: "6px 10px" }}>{savingSelfTransferNames ? "Сохраняем…" : "Сохранить варианты"}</button>
       </div>
 
@@ -8325,19 +8309,6 @@ function ProfileModal({ profile, client, selfTransferNames = [], onSaveSelfTrans
         <p style={{ fontSize: 11, color: "var(--text-tertiary)", margin: "8px 0 0", lineHeight: 1.5 }}>
           Делает текст белым, а палитру — ярче на этом устройстве: для большей читаемости. Действует только на этом устройстве.
         </p>
-      </div>
-
-      <div style={{
-        marginBottom: 16, padding: "12px 14px", borderRadius: 10,
-        background: "rgba(212,175,55,0.04)", border: "1px solid rgba(212,175,55,0.16)",
-      }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-          <div>
-            <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-primary)" }}>Оформление интерфейса</div>
-            <p style={{ fontSize: 11, color: "var(--text-tertiary)", margin: "4px 0 0", lineHeight: 1.45 }}>Общий стиль аккаунта и индивидуальные настройки панелей.</p>
-          </div>
-          <button type="button" onClick={onOpenAppearance} className={BTN.ghost} style={{ whiteSpace: "nowrap", padding: "7px 10px" }}>Настроить</button>
-        </div>
       </div>
 
       {/* ── Логотип (этого устройства) ─────────────────────────────────── */}
@@ -8432,7 +8403,7 @@ function ProfileModal({ profile, client, selfTransferNames = [], onSaveSelfTrans
 // ════════════════════════════════════════════════════════════════════════════
 // ADMIN PAGE — административная панель (v1.5, видна только role=admin)
 // ════════════════════════════════════════════════════════════════════════════
-function AdminPage({ profile, client, showToast, appearance }) {
+function AdminPage({ profile, client, showToast }) {
   const [section, setSection] = useState("users");
   const [users, setUsers] = useState([]);
   const [stats, setStats] = useState(null);
@@ -8608,8 +8579,7 @@ function AdminPage({ profile, client, showToast, appearance }) {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {filteredUsers.map(u => (
-                <AppearancePanel key={u.id} panelId={PANEL_IDS.adminUsers} appearance={appearance}>
-                <div style={{
+                <div key={u.id} className="kp-standard-card" style={{
                   display: "flex", alignItems: "center", gap: 12,
                   padding: "10px 14px", borderRadius: 10,
                   background: "#141414",
@@ -8737,7 +8707,6 @@ function AdminPage({ profile, client, showToast, appearance }) {
                     </div>
                   )}
                 </div>
-                </AppearancePanel>
               ))}
             </div>
           )}
@@ -8746,8 +8715,7 @@ function AdminPage({ profile, client, showToast, appearance }) {
 
       {/* Форма «Создать пользователя» — видна только в разделе users */}
       {section === "users" && (
-        <AppearancePanel panelId={PANEL_IDS.adminUsers} appearance={appearance}>
-        <div className="kp-card" style={{ marginTop: 16, padding: 16 }}>
+        <div className="kp-card kp-standard-card" style={{ marginTop: 16, padding: 16 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
             <UserPlus size={15} color="#d4af37" />
             <span style={{ fontSize: 13, fontWeight: 650, color: "#f7f8f8" }}>Создать пользователя</span>
@@ -8764,7 +8732,6 @@ function AdminPage({ profile, client, showToast, appearance }) {
             style={{ opacity: nuBusy ? 0.6 : 1 }}>{nuBusy ? "Создаю…" : "Создать"}</button>
           </div>
         </div>
-        </AppearancePanel>
       )}
 
       {/* Раздел "Статистика" */}
@@ -8787,9 +8754,7 @@ function AdminPage({ profile, client, showToast, appearance }) {
                 { label: "Доходов суммарно",     value: stats.income_total,       Icon: TrendingUp,   color: "#6ee7a8", format: fmt },
                 { label: "Расходов суммарно",    value: stats.expense_total,      Icon: TrendingDown, color: "#f8a3a3", format: fmt },
               ].map((it, i) => (
-                <AppearancePanel key={it.label} panelId={PANEL_IDS.adminStats} appearance={appearance}>
-                  <KpiCard label={it.label} value={Number(it.value || 0)} Icon={it.Icon} color={it.color} format={it.format} />
-                </AppearancePanel>
+                <KpiCard key={it.label} className="kp-standard-card" label={it.label} value={Number(it.value || 0)} Icon={it.Icon} color={it.color} format={it.format} />
               ))}
             </div>
           )}
@@ -8799,7 +8764,7 @@ function AdminPage({ profile, client, showToast, appearance }) {
       {/* Раздел "Журнал событий" */}
       {section === "activity" && (
         <div>
-          {loading ? <Empty text="Загружаем..." /> : <ActivityFeed items={activity} appearance={appearance} panelId={PANEL_IDS.adminActivity} />}
+          {loading ? <Empty text="Загружаем..." /> : <ActivityFeed items={activity} standardCards />}
         </div>
       )}
 
@@ -9158,14 +9123,9 @@ export default function App() {
 
   const [user, setUser]       = useState(null);
   const [profile, setProfile] = useState(null);
-  const [appearance, setAppearance] = useState(() => resetAppearance());
-  const [confirmedAppearance, setConfirmedAppearance] = useState(() => resetAppearance());
-  const [appearanceMode, setAppearanceMode] = useState(false);
-  const [activeAppearancePanel, setActiveAppearancePanel] = useState(null);
-  const [appearanceSaving, setAppearanceSaving] = useState(false);
-  const [appearanceSaveError, setAppearanceSaveError] = useState("");
-  const appearanceUserIdRef = useRef(null);
-  const appearanceRequestRef = useRef(null);
+  const [selfTransferNames, setSelfTransferNames] = useState([]);
+  const namePreferencesAccount = useRef(null);
+  const namePreferencesRequest = useRef(null);
 
   const [tab, setTab]               = useState("dashboard");
   const [pendingStageFilter, setPendingStageFilter] = useState("Активные");
@@ -9216,75 +9176,31 @@ export default function App() {
     toastTimer.current = setTimeout(()=>setToast(t => ({ ...t, visible: false })), 2500);
   }, []);
 
-  const appearanceCacheKey = (userId) => `kp-appearance:${userId}`;
-  const hydrateAppearance = useCallback(async (userId) => {
-    const requestToken = Symbol("appearance-hydration");
-    appearanceUserIdRef.current = userId;
-    appearanceRequestRef.current = requestToken;
-    const stillCurrent = () => appearanceUserIdRef.current === userId && appearanceRequestRef.current === requestToken;
-    const key = appearanceCacheKey(userId);
+  const hydrateSelfTransferNames = useCallback(async (userId) => {
+    const request = Symbol();
+    namePreferencesAccount.current = userId;
+    namePreferencesRequest.current = request;
+    try { setSelfTransferNames(readCachedSelfTransferNames(localStorage, userId)); }
+    catch { setSelfTransferNames([]); }
     try {
-      const cached = localStorage.getItem(key);
-      if (cached && stillCurrent()) {
-        const safeCached = deserializeAppearance(JSON.parse(cached));
-        setAppearance(safeCached);
-        setConfirmedAppearance(safeCached);
-      }
-    } catch {}
-    try {
-      const saved = await fetchAppearancePreferences(supabase, userId);
-      if (!stillCurrent()) return;
-      setAppearance(saved);
-      setConfirmedAppearance(saved);
-      try { localStorage.setItem(key, JSON.stringify(saved)); } catch {}
+      const saved = await fetchSelfTransferNames(supabase, userId);
+      if (namePreferencesRequest.current !== request) return;
+      setSelfTransferNames(saved);
+      try { cacheSelfTransferNames(localStorage, userId, saved); } catch {}
     } catch (error) {
-      // The migration can legitimately be absent before the separately gated DB step.
-      console.warn("Appearance preferences are unavailable:", error?.message || error);
+      console.warn("Не удалось загрузить варианты имени для банковского импорта:", error?.message || error);
     }
   }, []);
 
-  const saveAppearance = async () => {
-    if (!profile?.id) return;
-    setAppearanceSaving(true);
-    setAppearanceSaveError("");
-    try {
-      const saved = await upsertAppearancePreferences(supabase, profile.id, appearance);
-      setAppearance(saved);
-      setConfirmedAppearance(saved);
-      try { localStorage.setItem(appearanceCacheKey(profile.id), JSON.stringify(saved)); } catch {}
-      setAppearanceMode(false);
-      setActiveAppearancePanel(null);
-      showToast("✓ Оформление сохранено в аккаунте");
-    } catch (error) {
-      setAppearance(confirmedAppearance);
-      setAppearanceSaveError("Не удалось сохранить настройку аккаунта. Проверьте подключение и повторите.");
-      showToast("Не удалось сохранить оформление", "error");
-    } finally {
-      setAppearanceSaving(false);
-    }
-  };
-
   const saveSelfTransferNames = async (names) => {
-    if (!profile?.id) throw new Error("Нет активного аккаунта");
-    const next = deserializeAppearance({ ...appearance, selfTransferNames: names });
-    const saved = await upsertAppearancePreferences(supabase, profile.id, next);
-    setAppearance(saved);
-    setConfirmedAppearance(saved);
-    try { localStorage.setItem(appearanceCacheKey(profile.id), JSON.stringify(saved)); } catch {}
-  };
-
-  const closeAppearanceMode = () => {
-    setAppearance(confirmedAppearance);
-    setAppearanceMode(false);
-    setActiveAppearancePanel(null);
-    setAppearanceSaveError("");
-  };
-
-  const openAppearanceMode = () => {
-    setAppearance(confirmedAppearance);
-    setAppearanceMode(true);
-    setActiveAppearancePanel(null);
-    setAppearanceSaveError("");
+    const userId = profile?.id;
+    if (!userId) throw new Error("Нет активного аккаунта");
+    const saved = await upsertSelfTransferNames(supabase, userId, names);
+    if (namePreferencesAccount.current === userId) {
+      namePreferencesRequest.current = null;
+      setSelfTransferNames(saved);
+    }
+    try { cacheSelfTransferNames(localStorage, userId, saved); } catch {}
   };
 
   // ── Инициализация: проверяем сохранённую сессию ─────────────────────────
@@ -9310,7 +9226,7 @@ export default function App() {
             }
             setUser(session.user);
             setProfile(prof);
-            void hydrateAppearance(session.user.id);
+            void hydrateSelfTransferNames(session.user.id);
             // Ф3: роли определяем ДО загрузки — у чистого посетителя реальные RPC не зовём (ноль утечки данных).
             const rl = await fetchMyRoles(supabase).catch(() => []);
             setMyRoles(rl);
@@ -9379,12 +9295,9 @@ export default function App() {
       if (event === "SIGNED_OUT") {
         setUser(null);
         setProfile(null);
-        appearanceUserIdRef.current = null;
-        appearanceRequestRef.current = null;
-        setAppearance(resetAppearance());
-        setConfirmedAppearance(resetAppearance());
-        setAppearanceMode(false);
-        setActiveAppearancePanel(null);
+        namePreferencesAccount.current = null;
+        namePreferencesRequest.current = null;
+        setSelfTransferNames([]);
         setProjects([]);
         setTxs([]);
         setTasks([]);
@@ -9410,7 +9323,7 @@ export default function App() {
   const handleAuthenticated = async (u, prof) => {
     setUser(u);
     setProfile(prof);
-    void hydrateAppearance(u.id);
+    void hydrateSelfTransferNames(u.id);
     try {
       // Ф3: роли определяем ДО загрузки — у чистого посетителя реальные RPC не зовём (ноль утечки данных).
       const rl = await fetchMyRoles(supabase).catch(() => []);
@@ -9555,6 +9468,7 @@ export default function App() {
 
   if (phase === "auth") return (
     <>
+      <BackgroundCanvas />
       <AuthScreen onAuthenticated={handleAuthenticated} />
       <Toast visible={toast.visible} text={toast.text} type={toast.type}/>
     </>
@@ -9605,6 +9519,7 @@ export default function App() {
       color: "#f7f8f8",
       fontFamily: "'Geist Variable', system-ui, -apple-system, sans-serif",
     }}>
+      <BackgroundCanvas />
 
       <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)}
         projects={projects} tasks={tasks} orders={clientProjects} hasClientRole={hasClientRole}
@@ -9635,7 +9550,7 @@ export default function App() {
       }}>
         {/* Логотип */}
         <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
-          <div className="brand-frame" style={{
+          <div className="brand-breathe" style={{
             width: 40, height: 40, flex: "0 0 auto",
             display: "grid", placeItems: "center", borderRadius: 12,
             background: "radial-gradient(120% 120% at 30% 20%, rgba(232,200,96,0.20), rgba(212,175,55,0.05))",
@@ -9653,7 +9568,7 @@ export default function App() {
             alignItems: "center",
             gap: 8,
           }}>
-            <span className="brand-title">КЛИМАТ-ПРО</span>
+            <span className="brand-shimmer">КЛИМАТ-ПРО</span>
             <span className="brand-static-gold" style={{
               fontWeight: 500,
               fontSize: 13,
@@ -9965,15 +9880,15 @@ export default function App() {
                 {effectiveTab === "myorders"  && <ClientOrdersPage orders={clientProjects} client={supabase} profile={profile} showToast={showToast} onChanged={async () => { try { setClientProjects(await fetchMyClientProjects(supabase)); } catch (e) {} }} />}
               </>
             ) : <>
-            {effectiveTab === "dashboard" && <Dashboard projects={projects} txs={txs} tasks={tasks} onDrillStage={(stage) => { setPendingStageFilter(stage); setTab("projects"); }} sharesByProject={sharesByProject} myShares={myShares} ownerId={profile.id} paymentsByProject={paymentsByProject} appearance={appearance} customizeMode={appearanceMode} onSelectAppearancePanel={setActiveAppearancePanel} onResetAppearancePanel={(id) => setAppearance(value => withoutPanelOverride(value, id))} />}
-            {effectiveTab === "projects" && <Projects projects={projects} setProjects={setProjects} clients={clients} client={supabase} profile={profile} ownerId={profile.id} showToast={showToast} initialStageFilter={pendingStageFilter} sharesByProject={sharesByProject} setSharesByProject={setSharesByProject} pendingProjectId={pendingProjectId} onProjectOpened={() => setPendingProjectId(null)} setPaymentsByProject={setPaymentsByProject} onMakeReport={(sel)=>{ setReportProjects(sel); setReportModal(true); }} appearance={appearance} customizeMode={appearanceMode} onSelectAppearancePanel={setActiveAppearancePanel} onResetAppearancePanel={(id) => setAppearance(value => withoutPanelOverride(value, id))} />}
-            {effectiveTab === "tasks" && <TasksView client={supabase} profile={profile} projects={projects} showToast={showToast} appearance={appearance} customizeMode={appearanceMode} onSelectAppearancePanel={setActiveAppearancePanel} onResetAppearancePanel={(id) => setAppearance(value => withoutPanelOverride(value, id))} />}
+            {effectiveTab === "dashboard" && <Dashboard projects={projects} txs={txs} tasks={tasks} onDrillStage={(stage) => { setPendingStageFilter(stage); setTab("projects"); }} sharesByProject={sharesByProject} myShares={myShares} ownerId={profile.id} paymentsByProject={paymentsByProject} />}
+            {effectiveTab === "projects" && <Projects projects={projects} setProjects={setProjects} clients={clients} client={supabase} profile={profile} ownerId={profile.id} showToast={showToast} initialStageFilter={pendingStageFilter} sharesByProject={sharesByProject} setSharesByProject={setSharesByProject} pendingProjectId={pendingProjectId} onProjectOpened={() => setPendingProjectId(null)} setPaymentsByProject={setPaymentsByProject} onMakeReport={(sel)=>{ setReportProjects(sel); setReportModal(true); }} />}
+            {effectiveTab === "tasks" && <TasksView client={supabase} profile={profile} projects={projects} showToast={showToast} />}
             {effectiveTab === "clients" && <ClientsPage clients={clients} setClients={setClients} projects={projects} client={supabase} ownerId={profile.id} showToast={showToast} />}
             {effectiveTab === "requests" && <EmployeeRequestsPage client={supabase} showToast={showToast} />}
             {effectiveTab === "myorders" && <ClientOrdersPage orders={clientProjects} client={supabase} profile={profile} showToast={showToast} onChanged={async () => { try { setClientProjects(await fetchMyClientProjects(supabase)); } catch (e) {} }} />}
-            {effectiveTab === "finance" && <Finance txs={txs} setTxs={setTxs} client={supabase} ownerId={profile.id} showToast={showToast} projects={projects} sharesByProject={sharesByProject} myShares={myShares} paymentsByProject={paymentsByProject} selfNames={appearance.selfTransferNames} appearance={appearance} customizeMode={appearanceMode} onSelectAppearancePanel={setActiveAppearancePanel} onResetAppearancePanel={(id) => setAppearance(value => withoutPanelOverride(value, id))} />}
+            {effectiveTab === "finance" && <Finance txs={txs} setTxs={setTxs} client={supabase} ownerId={profile.id} showToast={showToast} projects={projects} sharesByProject={sharesByProject} myShares={myShares} paymentsByProject={paymentsByProject} selfNames={selfTransferNames} />}
             {effectiveTab === "analytics" && <Analytics projects={projects} txs={txs} sharesByProject={sharesByProject} ownerId={profile.id} paymentsByProject={paymentsByProject} />}
-            {effectiveTab === "admin" && profile?.role === "admin" && <AdminPage profile={profile} client={supabase} showToast={showToast} appearance={appearance} />}
+            {effectiveTab === "admin" && profile?.role === "admin" && <AdminPage profile={profile} client={supabase} showToast={showToast} />}
             </>}
           </motion.div>
         </AnimatePresence>
@@ -10016,26 +9931,12 @@ export default function App() {
       {profileModal && <ProfileModal
         profile={profile}
         client={supabase}
-        selfTransferNames={appearance.selfTransferNames}
+        selfTransferNames={selfTransferNames}
         onSaveSelfTransferNames={saveSelfTransferNames}
         onClose={() => setProfileModal(false)}
         onProfileUpdated={(p) => setProfile(p)}
-        onOpenAppearance={() => { setProfileModal(false); openAppearanceMode(); }}
         onOpenHelp={() => { setProfileModal(false); setHelpOpen(true); }}
         showToast={showToast}
-      />}
-      {appearanceMode && <AppearanceMode
-        draft={appearance}
-        activePanelId={activeAppearancePanel}
-        panelLabel={filterAppearancePanelsForRole(APPEARANCE_PANELS, profile?.role).find((panel) => panel.id === activeAppearancePanel)?.label}
-        panels={filterAppearancePanelsForRole(APPEARANCE_PANELS, profile?.role)}
-        saving={appearanceSaving}
-        saveError={appearanceSaveError}
-        onChange={setAppearance}
-        onSave={saveAppearance}
-        onClose={closeAppearanceMode}
-        onSelectPanel={setActiveAppearancePanel}
-        onClearPanel={(panelId) => { setAppearance(value => withoutPanelOverride(value, panelId)); setActiveAppearancePanel(null); }}
       />}
       {helpOpen && <HelpModal
         sections={helpSectionsFor(TABS.map((t) => t.id))}
